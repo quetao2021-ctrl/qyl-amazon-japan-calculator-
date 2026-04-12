@@ -1,0 +1,177 @@
+{
+    "name":  "Gemini Web RPA Image Workflow 7+4",
+    "nodes":  [
+                  {
+                      "parameters":  {
+                                         "formTitle":  "Gemini Web RPA Image Workflow",
+                                         "formDescription":  "No API mode. Login to Gemini in browser first, then submit.",
+                                         "formFields":  {
+                                                            "values":  [
+                                                                           {
+                                                                               "fieldLabel":  "fixed_prompt_file_path",
+                                                                               "fieldType":  "text",
+                                                                               "placeholder":  "E:\\codex\\prompts\\fixed_prompt.txt",
+                                                                               "requiredField":  true
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "product_image_path",
+                                                                               "fieldType":  "text",
+                                                                               "placeholder":  "C:\\Users\\30588\\Downloads\\61zljhREOxL._AC_SX679_.jpg",
+                                                                               "requiredField":  true
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "amazon_keywords",
+                                                                               "fieldType":  "textarea",
+                                                                               "requiredField":  true
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "output_dir",
+                                                                               "fieldType":  "text",
+                                                                               "placeholder":  "E:\\codex\\output\\gemini_rpa",
+                                                                               "requiredField":  false
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "session_dir",
+                                                                               "fieldType":  "text",
+                                                                               "placeholder":  "E:\\codex\\.gemini_profile",
+                                                                               "requiredField":  false
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "max_retry",
+                                                                               "fieldType":  "number",
+                                                                               "placeholder":  "5",
+                                                                               "requiredField":  false
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "retry_wait_sec",
+                                                                               "fieldType":  "number",
+                                                                               "placeholder":  "15",
+                                                                               "requiredField":  false
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "task_gap_sec",
+                                                                               "fieldType":  "number",
+                                                                               "placeholder":  "3",
+                                                                               "requiredField":  false
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "gen_timeout_sec",
+                                                                               "fieldType":  "number",
+                                                                               "placeholder":  "240",
+                                                                               "requiredField":  false
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "login_wait_sec",
+                                                                               "fieldType":  "number",
+                                                                               "placeholder":  "600",
+                                                                               "requiredField":  false
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "headless",
+                                                                               "fieldType":  "text",
+                                                                               "placeholder":  "false",
+                                                                               "requiredField":  false
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "open_new_chat",
+                                                                               "fieldType":  "text",
+                                                                               "placeholder":  "true",
+                                                                               "requiredField":  false
+                                                                           }
+                                                                       ]
+                                                        },
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "id":  "29314f30-2c2a-4e1d-a669-d3b7ee169e66",
+                      "name":  "Form Trigger",
+                      "type":  "n8n-nodes-base.formTrigger",
+                      "position":  [
+                                       -760,
+                                       320
+                                   ],
+                      "webhookId":  "16ecf8f9-5e36-4e64-bf31-b42db05c9bd7",
+                      "typeVersion":  2.3
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const q = (v) =\u003e `\"${String(v ?? \u0027\u0027).replace(/\"/g, \u0027\\\\\"\u0027)}\"`;\n\nconst fixedPromptFile = $json.fixed_prompt_file_path;\nconst imagePath = $json.product_image_path;\nconst keywords = $json.amazon_keywords;\n\nconst outputDir = $json.output_dir || \u0027E:\\\\codex\\\\output\\\\gemini_rpa\u0027;\nconst sessionDir = $json.session_dir || \u0027E:\\\\codex\\\\.gemini_profile\u0027;\n\nconst maxRetry = $json.max_retry || 5;\nconst retryWait = $json.retry_wait_sec || 15;\nconst taskGap = $json.task_gap_sec || 3;\nconst genTimeout = $json.gen_timeout_sec || 240;\nconst loginWait = $json.login_wait_sec || 600;\nconst headless = ($json.headless || \u0027false\u0027).toString();\nconst openNewChat = ($json.open_new_chat || \u0027true\u0027).toString();\n\nif (!fixedPromptFile || !imagePath || !keywords) {\n  throw new Error(\u0027fixed_prompt_file_path, product_image_path, amazon_keywords are required\u0027);\n}\n\nconst scriptPath = \u0027E:\\\\codex\\\\scripts\\\\gemini_web_rpa_worker.js\u0027;\n\nconst command = [\n  \u0027node\u0027, q(scriptPath),\n  \u0027--fixed-prompt-file\u0027, q(fixedPromptFile),\n  \u0027--image-path\u0027, q(imagePath),\n  \u0027--keywords\u0027, q(keywords),\n  \u0027--output-dir\u0027, q(outputDir),\n  \u0027--session-dir\u0027, q(sessionDir),\n  \u0027--max-retry\u0027, q(maxRetry),\n  \u0027--retry-wait-sec\u0027, q(retryWait),\n  \u0027--task-gap-sec\u0027, q(taskGap),\n  \u0027--gen-timeout-sec\u0027, q(genTimeout),\n  \u0027--login-wait-sec\u0027, q(loginWait),\n  \u0027--headless\u0027, q(headless),\n  \u0027--open-new-chat\u0027, q(openNewChat),\n  \u0027--attach-each-task\u0027, q(\u0027false\u0027)\n].join(\u0027 \u0027);\n\nreturn [{ json: { ...$json, command, script_path: scriptPath } }];"
+                                     },
+                      "id":  "5f4a0f98-3e6d-40f1-9b4f-6e318f0d0702",
+                      "name":  "Build Command",
+                      "type":  "n8n-nodes-base.code",
+                      "position":  [
+                                       -430,
+                                       320
+                                   ],
+                      "typeVersion":  2
+                  },
+                  {
+                      "parameters":  {
+                                         "command":  "={{$json.command}}"
+                                     },
+                      "id":  "0fd47294-8f9f-4ce1-b8c4-98ef8a777f1e",
+                      "name":  "Run RPA Script",
+                      "type":  "n8n-nodes-base.executeCommand",
+                      "position":  [
+                                       -120,
+                                       320
+                                   ],
+                      "typeVersion":  1
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const stdout = $json.stdout || \u0027\u0027;\nconst stderr = $json.stderr || \u0027\u0027;\nconst exitCode = $json.exitCode;\n\nlet summaryPath = null;\nconst m = stdout.match(/SUMMARY_PATH=(.+)/);\nif (m) summaryPath = m[1].trim();\n\nreturn [{\n  json: {\n    ok: exitCode === 0,\n    exit_code: exitCode,\n    summary_path: summaryPath,\n    stdout,\n    stderr,\n    note: summaryPath\n      ? \u0027Done. Open summary_path to inspect all 11 tasks and file paths.\u0027\n      : \u0027SUMMARY_PATH was not found. Check stdout/stderr.\u0027\n  }\n}];"
+                                     },
+                      "id":  "3fed9e97-c029-4f90-8d0a-d89227df4fd5",
+                      "name":  "Extract Result",
+                      "type":  "n8n-nodes-base.code",
+                      "position":  [
+                                       180,
+                                       320
+                                   ],
+                      "typeVersion":  2
+                  }
+              ],
+    "pinData":  {
+
+                },
+    "connections":  {
+                        "Form Trigger":  {
+                                             "main":  [
+                                                          {
+                                                              "node":  "Build Command",
+                                                              "type":  "main",
+                                                              "index":  0
+                                                          }
+                                                      ]
+                                         },
+                        "Build Command":  {
+                                              "main":  [
+                                                           {
+                                                               "node":  "Run RPA Script",
+                                                               "type":  "main",
+                                                               "index":  0
+                                                           }
+                                                       ]
+                                          },
+                        "Run RPA Script":  {
+                                               "main":  [
+                                                            {
+                                                                "node":  "Extract Result",
+                                                                "type":  "main",
+                                                                "index":  0
+                                                            }
+                                                        ]
+                                           }
+                    },
+    "active":  false,
+    "settings":  {
+                     "executionOrder":  "v1"
+                 },
+    "versionId":  "f50792dd-4f76-4ac4-b040-9a6cf6d92efe",
+    "tags":  [
+
+             ]
+}

@@ -1,0 +1,178 @@
+{
+  "name": "Gemini \u7f51\u9875RPA\u4f5c\u56fe\uff087\u4e3b\u56fe+4A+\uff09",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Gemini \u7f51\u9875RPA\u4f5c\u56fe\uff08\u65e0API\uff09",
+        "formDescription": "\u5148\u5728\u6d4f\u89c8\u5668\u767b\u5f55Gemini\uff0c\u518d\u63d0\u4ea4\u4efb\u52a1\u3002",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "\u56fa\u5b9a\u63d0\u793a\u8bcd\u6587\u4ef6\u8def\u5f84",
+              "fieldType": "text",
+              "placeholder": "E:\\codex\\prompts\\fixed_prompt.txt",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "\u4ea7\u54c1\u56fe\u672c\u5730\u8def\u5f84",
+              "fieldType": "text",
+              "placeholder": "C:\\Users\\30588\\Downloads\\61zljhREOxL._AC_SX679_.jpg",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "\u4e9a\u9a6c\u900a\u5173\u952e\u8bcd",
+              "fieldType": "textarea",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "\u8f93\u51fa\u76ee\u5f55",
+              "fieldType": "text",
+              "placeholder": "E:\\codex\\output\\gemini_rpa",
+              "requiredField": false
+            },
+            {
+              "fieldLabel": "\u6d4f\u89c8\u5668\u4f1a\u8bdd\u76ee\u5f55",
+              "fieldType": "text",
+              "placeholder": "E:\\codex\\.gemini_profile",
+              "requiredField": false
+            },
+            {
+              "fieldLabel": "\u6700\u5927\u91cd\u8bd5\u6b21\u6570",
+              "fieldType": "number",
+              "placeholder": "5",
+              "requiredField": false
+            },
+            {
+              "fieldLabel": "\u91cd\u8bd5\u7b49\u5f85\u79d2\u6570",
+              "fieldType": "number",
+              "placeholder": "15",
+              "requiredField": false
+            },
+            {
+              "fieldLabel": "\u4efb\u52a1\u95f4\u9694\u79d2\u6570",
+              "fieldType": "number",
+              "placeholder": "3",
+              "requiredField": false
+            },
+            {
+              "fieldLabel": "\u6bcf\u6b21\u751f\u6210\u8d85\u65f6\u79d2\u6570",
+              "fieldType": "number",
+              "placeholder": "240",
+              "requiredField": false
+            },
+            {
+              "fieldLabel": "\u767b\u5f55\u7b49\u5f85\u79d2\u6570",
+              "fieldType": "number",
+              "placeholder": "600",
+              "requiredField": false
+            },
+            {
+              "fieldLabel": "\u65e0\u5934\u6a21\u5f0f(true/false)",
+              "fieldType": "text",
+              "placeholder": "false",
+              "requiredField": false
+            },
+            {
+              "fieldLabel": "\u6bcf\u6b21\u5148\u5f00\u65b0\u5bf9\u8bdd(true/false)",
+              "fieldType": "text",
+              "placeholder": "true",
+              "requiredField": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "29314f30-2c2a-4e1d-a669-d3b7ee169e66",
+      "name": "\u8868\u5355\u89e6\u53d1",
+      "type": "n8n-nodes-base.formTrigger",
+      "position": [
+        -760,
+        320
+      ],
+      "webhookId": "16ecf8f9-5e36-4e64-bf31-b42db05c9bd7",
+      "typeVersion": 2.3
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst pick = (...keys) => {\n  for (const k of keys) {\n    const v = $json[k];\n    if (v !== undefined && v !== null && String(v).trim() !== '') return v;\n  }\n  return undefined;\n};\n\nconst q = (v) => `\"${String(v ?? '').replace(/\"/g, '\\\\\"')}\"`;\n\nconst fixedPromptFile = pick('\u56fa\u5b9a\u63d0\u793a\u8bcd\u6587\u4ef6\u8def\u5f84', 'fixed_prompt_file_path');\nconst imagePath = pick('\u4ea7\u54c1\u56fe\u672c\u5730\u8def\u5f84', 'product_image_path');\nconst keywords = pick('\u4e9a\u9a6c\u900a\u5173\u952e\u8bcd', 'amazon_keywords');\n\nconst outputDir = pick('\u8f93\u51fa\u76ee\u5f55', 'output_dir') || 'E:\\\\codex\\\\output\\\\gemini_rpa';\nconst sessionDir = pick('\u6d4f\u89c8\u5668\u4f1a\u8bdd\u76ee\u5f55', 'session_dir') || 'E:\\\\codex\\\\.gemini_profile';\n\nconst maxRetry = pick('\u6700\u5927\u91cd\u8bd5\u6b21\u6570', 'max_retry') || 5;\nconst retryWait = pick('\u91cd\u8bd5\u7b49\u5f85\u79d2\u6570', 'retry_wait_sec') || 15;\nconst taskGap = pick('\u4efb\u52a1\u95f4\u9694\u79d2\u6570', 'task_gap_sec') || 3;\nconst genTimeout = pick('\u6bcf\u6b21\u751f\u6210\u8d85\u65f6\u79d2\u6570', 'gen_timeout_sec') || 240;\nconst loginWait = pick('\u767b\u5f55\u7b49\u5f85\u79d2\u6570', 'login_wait_sec') || 600;\nconst headless = String(pick('\u65e0\u5934\u6a21\u5f0f(true/false)', 'headless') || 'false');\nconst openNewChat = String(pick('\u6bcf\u6b21\u5148\u5f00\u65b0\u5bf9\u8bdd(true/false)', 'open_new_chat') || 'true');\n\nif (!fixedPromptFile || !imagePath || !keywords) {\n  throw new Error('\u5fc5\u586b\u9879\u7f3a\u5931\uff1a\u56fa\u5b9a\u63d0\u793a\u8bcd\u6587\u4ef6\u8def\u5f84 / \u4ea7\u54c1\u56fe\u672c\u5730\u8def\u5f84 / \u4e9a\u9a6c\u900a\u5173\u952e\u8bcd');\n}\n\nconst scriptPath = 'E:\\\\codex\\\\scripts\\\\gemini_web_rpa_worker.js';\n\nconst command = [\n  'node', q(scriptPath),\n  '--fixed-prompt-file', q(fixedPromptFile),\n  '--image-path', q(imagePath),\n  '--keywords', q(keywords),\n  '--output-dir', q(outputDir),\n  '--session-dir', q(sessionDir),\n  '--max-retry', q(maxRetry),\n  '--retry-wait-sec', q(retryWait),\n  '--task-gap-sec', q(taskGap),\n  '--gen-timeout-sec', q(genTimeout),\n  '--login-wait-sec', q(loginWait),\n  '--headless', q(headless),\n  '--open-new-chat', q(openNewChat),
+  '--attach-each-task', q('false')\n].join(' ');\n\nreturn [{ json: { ...$json, command, script_path: scriptPath } }];\n"
+      },
+      "id": "5f4a0f98-3e6d-40f1-9b4f-6e318f0d0702",
+      "name": "\u7ec4\u88c5\u6267\u884c\u547d\u4ee4",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        -430,
+        320
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "command": "={{$json.command}}"
+      },
+      "id": "0fd47294-8f9f-4ce1-b8c4-98ef8a777f1e",
+      "name": "\u6267\u884cRPA\u811a\u672c",
+      "type": "n8n-nodes-base.executeCommand",
+      "position": [
+        -120,
+        320
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst stdout = $json.stdout || '';\nconst stderr = $json.stderr || '';\nconst exitCode = $json.exitCode;\n\nconst readLine = (prefix) => {\n  const m = stdout.match(new RegExp(prefix + '=(.+)'));\n  return m ? m[1].trim() : null;\n};\n\nconst parseJsonLine = (line, fallback) => {\n  if (!line) return fallback;\n  try {\n    return JSON.parse(line);\n  } catch {\n    return fallback;\n  }\n};\n\nconst summaryPath = readLine('SUMMARY_PATH');\nconst debugDir = readLine('DEBUG_DIR');\n\nconst failedLine = readLine('FAILED_SCREENSHOTS');\nconst reasonLine = readLine('FAILED_REASON_COUNTS');\nconst phaseLine = readLine('PHASE_SUMMARY');\nconst failedTaskIdsLine = readLine('FAILED_TASK_IDS');\n\nlet failedScreenshots = [];\nif (failedLine) {\n  try {\n    const parsed = JSON.parse(failedLine);\n    if (Array.isArray(parsed)) failedScreenshots = parsed;\n  } catch {\n    failedScreenshots = failedLine.split('|').map(s => s.trim()).filter(Boolean);\n  }\n}\n\nconst failedReasonCounts = parseJsonLine(reasonLine, {});\nconst phaseSummary = parseJsonLine(phaseLine, {});\nconst failedTaskIds = parseJsonLine(failedTaskIdsLine, []);\n\nreturn [{\n  json: {\n    ok: exitCode === 0 || exitCode === 2,\n    status: exitCode === 0 ? 'success' : (exitCode === 2 ? 'partial' : 'failed'),\n    exit_code: exitCode,\n    summary_path: summaryPath,\n    debug_dir: debugDir,\n    failed_screenshot_paths: failedScreenshots,\n    failed_reason_counts: failedReasonCounts,\n    phase_summary: phaseSummary,\n    failed_task_ids: Array.isArray(failedTaskIds) ? failedTaskIds : [],\n    stdout,\n    stderr,\n    note: summaryPath\n      ? '\u6267\u884c\u5b8c\u6210\uff0c\u53ef\u6253\u5f00 summary_path \u67e5\u770b11\u4e2a\u4efb\u52a1\u8be6\u60c5\u3002'\n      : '\u672a\u89e3\u6790\u5230 SUMMARY_PATH\uff0c\u8bf7\u68c0\u67e5 stdout/stderr\u3002'\n  }\n}];\n"
+      },
+      "id": "3fed9e97-c029-4f90-8d0a-d89227df4fd5",
+      "name": "\u63d0\u53d6\u6267\u884c\u7ed3\u679c",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        180,
+        320
+      ],
+      "typeVersion": 2
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "\u8868\u5355\u89e6\u53d1": {
+      "main": [
+        [
+          {
+            "node": "\u7ec4\u88c5\u6267\u884c\u547d\u4ee4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u7ec4\u88c5\u6267\u884c\u547d\u4ee4": {
+      "main": [
+        [
+          {
+            "node": "\u6267\u884cRPA\u811a\u672c",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u6267\u884cRPA\u811a\u672c": {
+      "main": [
+        [
+          {
+            "node": "\u63d0\u53d6\u6267\u884c\u7ed3\u679c",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "92f73315-43bd-4914-b5d6-47a7bf2d7ac9",
+  "tags": []
+}

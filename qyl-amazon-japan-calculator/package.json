@@ -1,0 +1,45 @@
+{
+  "name": "qyl-amazon-japan-calculator",
+  "version": "1.0.0",
+  "description": "QYL Amazon Japan pricing calculator desktop app",
+  "main": "main.js",
+  "author": "QYL",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build-win": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.qyl.amazon.japan.calculator",
+    "productName": "QYL Amazon JP Calculator",
+    "files": [
+      "main.js",
+      "QYL_amazon_japan_calculator.html",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "QYL 亚马逊日本定价计算器"
+    }
+  }
+}

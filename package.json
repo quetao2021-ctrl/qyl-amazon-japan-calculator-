@@ -1,0 +1,17 @@
+{
+  "name": "codex",
+  "version": "1.0.0",
+  "description": "This workspace now supports two providers:",
+  "main": "euipo_copla_conf_all.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1",
+    "multer": "^2.1.1",
+    "playwright": "^1.59.1"
+  }
+}

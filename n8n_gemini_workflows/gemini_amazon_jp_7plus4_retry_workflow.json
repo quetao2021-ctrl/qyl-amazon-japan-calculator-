@@ -1,0 +1,114 @@
+﻿{
+    "name":  "gemini-amazon-jp-image-pipeline-7plus4",
+    "nodes":  [
+                  {
+                      "parameters":  {
+                                         "formTitle":  "Gemini 日本站亚马逊图工作流（7主图+4A+）",
+                                         "formDescription":  "固定提示词不改；上传产品图+关键词后自动生成主图7张（1600x1600）与A+图4张（970x600），失败自动重试。",
+                                         "formFields":  {
+                                                            "values":  [
+                                                                           {
+                                                                               "fieldLabel":  "Gemini API Key",
+                                                                               "fieldType":  "text",
+                                                                               "requiredField":  true
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "固定提示词（原文）",
+                                                                               "fieldType":  "textarea",
+                                                                               "requiredField":  true
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "亚马逊关键词",
+                                                                               "fieldType":  "textarea",
+                                                                               "requiredField":  true
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "产品图",
+                                                                               "fieldType":  "file",
+                                                                               "multipleFiles":  false,
+                                                                               "acceptFileTypes":  "image/*",
+                                                                               "requiredField":  true
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "最大重试次数",
+                                                                               "fieldType":  "number",
+                                                                               "placeholder":  "5",
+                                                                               "requiredField":  false
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "重试等待秒数",
+                                                                               "fieldType":  "number",
+                                                                               "placeholder":  "10",
+                                                                               "requiredField":  false
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "任务间隔秒数",
+                                                                               "fieldType":  "number",
+                                                                               "placeholder":  "2",
+                                                                               "requiredField":  false
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "温度",
+                                                                               "fieldType":  "number",
+                                                                               "placeholder":  "0.7",
+                                                                               "requiredField":  false
+                                                                           },
+                                                                           {
+                                                                               "fieldLabel":  "文件名前缀",
+                                                                               "fieldType":  "text",
+                                                                               "placeholder":  "amazon_jp",
+                                                                               "requiredField":  false
+                                                                           }
+                                                                       ]
+                                                        },
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "id":  "5ab70f6d-1d59-4b58-9ac2-5d0c0cb6c7d1",
+                      "name":  "表单触发",
+                      "type":  "n8n-nodes-base.formTrigger",
+                      "position":  [
+                                       -620,
+                                       300
+                                   ],
+                      "webhookId":  "7b4dbb95-dfd9-4fd2-a5a4-7fd4a71f486b",
+                      "typeVersion":  2.3
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const input = $input.first();\nconst json = input.json || {};\nconst binary = input.binary || {};\n\nconst imageKey = [\n  \u0027产品图\u0027, \u0027Product Image\u0027, \u0027Product_Image\u0027, \u0027Image\u0027, \u0027image\u0027, \u0027product_image\u0027\n].find((k) =\u003e Object.prototype.hasOwnProperty.call(binary, k)) || Object.keys(binary)[0];\n\nif (!imageKey) {\n  throw new Error(\u0027未找到产品图。请在表单字段“产品图”上传1张图片。\u0027);\n}\n\nconst apiKey = json[\u0027Gemini API Key\u0027] || json[\u0027Gemini_API_Key\u0027] || json[\u0027api_key\u0027] || json[\u0027gemini_api_key\u0027];\nif (!apiKey) {\n  throw new Error(\u0027Gemini API Key 不能为空。\u0027);\n}\n\nconst fixedPrompt = json[\u0027固定提示词（原文）\u0027] || json[\u0027固定提示词\u0027] || json[\u0027Fixed Prompt\u0027] || json[\u0027fixed_prompt\u0027];\nif (!fixedPrompt) {\n  throw new Error(\u0027固定提示词不能为空。请粘贴你的固定提示词原文。\u0027);\n}\n\nconst keywords = json[\u0027亚马逊关键词\u0027] || json[\u0027Amazon Keywords\u0027] || json[\u0027keywords\u0027] || \u0027\u0027;\nif (!String(keywords).trim()) {\n  throw new Error(\u0027亚马逊关键词不能为空。\u0027);\n}\n\nconst maxRetryRaw = Number(json[\u0027最大重试次数\u0027] ?? json[\u0027Max Retry\u0027] ?? 5);\nconst maxRetry = Number.isFinite(maxRetryRaw) ? Math.max(1, Math.min(12, Math.floor(maxRetryRaw))) : 5;\n\nconst retryWaitSecondsRaw = Number(json[\u0027重试等待秒数\u0027] ?? json[\u0027Retry Wait Seconds\u0027] ?? 10);\nconst retryWaitMs = (Number.isFinite(retryWaitSecondsRaw) ? Math.max(1, Math.min(180, retryWaitSecondsRaw)) : 10) * 1000;\n\nconst gapSecondsRaw = Number(json[\u0027任务间隔秒数\u0027] ?? json[\u0027Request Gap Seconds\u0027] ?? 2);\nconst gapMs = (Number.isFinite(gapSecondsRaw) ? Math.max(0, Math.min(60, gapSecondsRaw)) : 2) * 1000;\n\nconst temperatureRaw = Number(json[\u0027温度\u0027] ?? json[\u0027Temperature\u0027] ?? 0.7);\nconst temperature = Number.isFinite(temperatureRaw) ? Math.max(0, Math.min(1.2, temperatureRaw)) : 0.7;\n\nconst filePrefixRaw = (json[\u0027文件名前缀\u0027] || json[\u0027Output Prefix\u0027] || \u0027amazon_jp\u0027).toString().trim();\nconst filePrefix = filePrefixRaw.replace(/[^a-zA-Z0-9_-]/g, \u0027_\u0027) || \u0027amazon_jp\u0027;\n\nconst sourceBinary = binary[imageKey];\nconst sourceBuffer = await this.helpers.getBinaryDataBuffer(0, imageKey);\nconst sourceMimeType = sourceBinary.mimeType || \u0027image/png\u0027;\nconst sourceImageBase64 = Buffer.from(sourceBuffer).toString(\u0027base64\u0027);\n\nconst sleep = (ms) =\u003e new Promise((resolve) =\u003e setTimeout(resolve, ms));\n\nconst proUrl = \u0027https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent\u0027;\nconst imageUrl = \u0027https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent\u0027;\n\nasync function geminiCall(url, body) {\n  return await this.helpers.httpRequest({\n    method: \u0027POST\u0027,\n    url,\n    headers: {\n      \u0027Content-Type\u0027: \u0027application/json\u0027,\n      \u0027x-goog-api-key\u0027: apiKey,\n    },\n    body,\n    json: true,\n    timeout: 300000,\n  });\n}\n\nfunction extractText(resp) {\n  const candidates = Array.isArray(resp?.candidates) ? resp.candidates : [];\n  for (const candidate of candidates) {\n    const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];\n    for (const part of parts) {\n      if (typeof part?.text === \u0027string\u0027 \u0026\u0026 part.text.trim()) {\n        return part.text.trim();\n      }\n    }\n  }\n  return \u0027\u0027;\n}\n\nfunction extractImageParts(resp) {\n  const images = [];\n  const candidates = Array.isArray(resp?.candidates) ? resp.candidates : [];\n\n  for (const candidate of candidates) {\n    const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];\n    for (const part of parts) {\n      const inline = part?.inlineData || part?.inline_data;\n      if (inline?.data) {\n        images.push({\n          data: inline.data,\n          mimeType: inline.mimeType || inline.mime_type || \u0027image/png\u0027,\n        });\n      }\n      if (part?.image?.imageBytes) {\n        images.push({\n          data: part.image.imageBytes,\n          mimeType: part.image.mimeType || \u0027image/png\u0027,\n        });\n      }\n    }\n  }\n  return images;\n}\n\nfunction detectImageDimensions(base64, mimeTypeHint = \u0027\u0027) {\n  try {\n    const b = Buffer.from(base64, \u0027base64\u0027);\n    const hint = (mimeTypeHint || \u0027\u0027).toLowerCase();\n\n    // PNG\n    if (\n      b.length \u003e= 24 \u0026\u0026\n      b[0] === 0x89 \u0026\u0026 b[1] === 0x50 \u0026\u0026 b[2] === 0x4e \u0026\u0026 b[3] === 0x47 \u0026\u0026\n      b[4] === 0x0d \u0026\u0026 b[5] === 0x0a \u0026\u0026 b[6] === 0x1a \u0026\u0026 b[7] === 0x0a\n    ) {\n      return {\n        format: \u0027png\u0027,\n        width: b.readUInt32BE(16),\n        height: b.readUInt32BE(20),\n      };\n    }\n\n    // JPEG\n    if ((hint.includes(\u0027jpeg\u0027) || hint.includes(\u0027jpg\u0027) || (b[0] === 0xff \u0026\u0026 b[1] === 0xd8)) \u0026\u0026 b.length \u003e 4) {\n      let i = 2;\n      while (i \u003c b.length) {\n        if (b[i] !== 0xff) { i++; continue; }\n        const marker = b[i + 1];\n        if (!marker || marker === 0xda || marker === 0xd9) break;\n        const len = b.readUInt16BE(i + 2);\n        if ([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf].includes(marker)) {\n          return {\n            format: \u0027jpeg\u0027,\n            height: b.readUInt16BE(i + 5),\n            width: b.readUInt16BE(i + 7),\n          };\n        }\n        i += 2 + len;\n      }\n    }\n\n    // WEBP\n    if (b.length \u003e= 30 \u0026\u0026 b.toString(\u0027ascii\u0027, 0, 4) === \u0027RIFF\u0027 \u0026\u0026 b.toString(\u0027ascii\u0027, 8, 12) === \u0027WEBP\u0027) {\n      const chunk = b.toString(\u0027ascii\u0027, 12, 16);\n      if (chunk === \u0027VP8X\u0027 \u0026\u0026 b.length \u003e= 30) {\n        const w = 1 + b.readUIntLE(24, 3);\n        const h = 1 + b.readUIntLE(27, 3);\n        return { format: \u0027webp\u0027, width: w, height: h };\n      }\n    }\n  } catch (e) {\n    return { format: \u0027unknown\u0027, width: null, height: null, error: e.message };\n  }\n  return { format: \u0027unknown\u0027, width: null, height: null };\n}\n\nconst tasks = [\n  { phase: \u0027main\u0027, order: 1, width: 1600, height: 1600, prompt: \u0027主图1：白底纯产品图。背景必须纯白（#FFFFFF），只能有产品本体，不允许人物、动物、宠物、文字、水印、道具。\u0027 },\n  { phase: \u0027main\u0027, order: 2, width: 1600, height: 1600, prompt: \u0027主图2：日式家居场景卖点图，允许1位人物互动。产品结构、颜色、细节保持不变。\u0027 },\n  { phase: \u0027main\u0027, order: 3, width: 1600, height: 1600, prompt: \u0027主图3：宠物家庭场景图，可包含宠物（如狗/猫）。产品本体保持不变。\u0027 },\n  { phase: \u0027main\u0027, order: 4, width: 1600, height: 1600, prompt: \u0027主图4：出行/拉杆使用场景，强调拉杆与移动性。产品本体保持不变。\u0027 },\n  { phase: \u0027main\u0027, order: 5, width: 1600, height: 1600, prompt: \u0027主图5：功能卖点图，突出万向轮、拉杆、折叠结构。产品本体保持不变。\u0027 },\n  { phase: \u0027main\u0027, order: 6, width: 1600, height: 1600, prompt: \u0027主图6：容量与收纳组织场景图。产品本体保持不变。\u0027 },\n  { phase: \u0027main\u0027, order: 7, width: 1600, height: 1600, prompt: \u0027主图7：温暖生活化场景（人物+宠物可选）。产品本体保持不变。\u0027 },\n  { phase: \u0027a_plus\u0027, order: 8, width: 970, height: 600, prompt: \u0027A+图1（970x600）：品牌横幅风格，必须与主图构图不同。产品本体保持不变。\u0027 },\n  { phase: \u0027a_plus\u0027, order: 9, width: 970, height: 600, prompt: \u0027A+图2（970x600）：功能对比/优势说明视觉，必须与主图不同。产品本体保持不变。\u0027 },\n  { phase: \u0027a_plus\u0027, order: 10, width: 970, height: 600, prompt: \u0027A+图3（970x600）：折叠步骤叙事型视觉，必须与主图不同。产品本体保持不变。\u0027 },\n  { phase: \u0027a_plus\u0027, order: 11, width: 970, height: 600, prompt: \u0027A+图4（970x600）：材质与移动性叙事视觉，必须与主图不同。产品本体保持不变。\u0027 },\n];\n\nconst globalRules = [\n  \u0027你的任务是基于用户提供的产品图进行电商视觉生成。\u0027,\n  \u0027严禁改变产品本体：外观结构、主要颜色、比例、拉杆与轮组形态必须保持一致。\u0027,\n  \u0027目标站点为日本亚马逊，风格需符合日本电商审美。\u0027,\n  \u0027每次只输出当前任务的一张图片。\u0027,\n  \u0027图片必须清晰，达到高分辨率质感。\u0027,\n].join(\u0027\\n\u0027);\n\nlet readyReply = \u0027\u0027;\nlet readyStepStatus = \u0027failed\u0027;\nlet readyError = \u0027\u0027;\n\nconst readyMaxRetry = Math.min(3, maxRetry);\nfor (let i = 1; i \u003c= readyMaxRetry; i++) {\n  try {\n    const readyResp = await geminiCall(proUrl, {\n      contents: [\n        {\n          role: \u0027user\u0027,\n          parts: [\n            { text: fixedPrompt },\n          ],\n        },\n      ],\n      generationConfig: {\n        temperature: 0.2,\n        maxOutputTokens: 256,\n      },\n    });\n\n    readyReply = extractText(readyResp) || \u0027READY_REPLY_EMPTY\u0027;\n    readyStepStatus = \u0027ok\u0027;\n    readyError = \u0027\u0027;\n    break;\n  } catch (err) {\n    readyError = err.message;\n    if (i \u003c readyMaxRetry) {\n      await sleep(retryWaitMs);\n    }\n  }\n}\n\nif (readyStepStatus !== \u0027ok\u0027) {\n  throw new Error(`准备阶段失败（gemini-2.5-pro）。错误: ${readyError || \u0027unknown\u0027}`);\n}\n\nconst outputItems = [];\nconst failedTasks = [];\nlet generatedCount = 0;\n\nfor (const task of tasks) {\n  let success = false;\n  let lastError = \u0027\u0027;\n\n  for (let attempt = 1; attempt \u003c= maxRetry; attempt++) {\n    const retryHint = attempt === 1\n      ? \u0027\u0027\n      : `上次生成未得到合格图片，请重试当前任务。当前重试 ${attempt}/${maxRetry}。`;\n\n    const promptText = [\n      fixedPrompt,\n      \u0027\u0027,\n      `亚马逊关键词: ${keywords}`,\n      `当前阶段: ${task.phase}`,\n      `当前序号: ${task.order}`,\n      `目标尺寸: ${task.width}x${task.height}`,\n      globalRules,\n      `当前任务: ${task.prompt}`,\n      retryHint,\n    ].filter(Boolean).join(\u0027\\n\u0027);\n\n    let resp;\n    try {\n      resp = await geminiCall(imageUrl, {\n        contents: [\n          {\n            role: \u0027user\u0027,\n            parts: [\n              { text: promptText },\n              {\n                inline_data: {\n                  mime_type: sourceMimeType,\n                  data: sourceImageBase64,\n                },\n              },\n            ],\n          },\n        ],\n        generationConfig: {\n          temperature,\n        },\n      });\n    } catch (err) {\n      lastError = `HTTP_ERROR: ${err.message}`;\n      if (attempt \u003c maxRetry) await sleep(retryWaitMs);\n      continue;\n    }\n\n    const images = extractImageParts(resp);\n    if (!images.length) {\n      lastError = extractText(resp) || \u0027NO_IMAGE_RETURNED\u0027;\n      if (attempt \u003c maxRetry) await sleep(retryWaitMs);\n      continue;\n    }\n\n    const picked = images[0];\n    const dim = detectImageDimensions(picked.data, picked.mimeType);\n    const sizeOk = dim.width === task.width \u0026\u0026 dim.height === task.height;\n\n    if (!sizeOk) {\n      lastError = `SIZE_MISMATCH: got ${dim.width || \u0027?\u0027}x${dim.height || \u0027?\u0027}, expected ${task.width}x${task.height}`;\n      if (attempt \u003c maxRetry) await sleep(retryWaitMs);\n      continue;\n    }\n\n    const ext = (() =\u003e {\n  const m = (picked.mimeType || \u0027image/png\u0027).toLowerCase();\n  if (m.includes(\u0027jpeg\u0027) || m.includes(\u0027jpg\u0027)) return \u0027jpg\u0027;\n  if (m.includes(\u0027webp\u0027)) return \u0027webp\u0027;\n  if (m.includes(\u0027png\u0027)) return \u0027png\u0027;\n  return \u0027png\u0027;\n})();\nconst fileName = `${filePrefix}_${task.phase}_${String(task.order).padStart(2, \u00270\u0027)}_${task.width}x${task.height}.${ext}`;\n\n    outputItems.push({\n      json: {\n        status: \u0027ok\u0027,\n        phase: task.phase,\n        task_order: task.order,\n        target_size: `${task.width}x${task.height}`,\n        actual_size: `${dim.width}x${dim.height}`,\n        attempt_used: attempt,\n        extra_images_in_same_response: Math.max(0, images.length - 1),\n        ready_step_status: readyStepStatus,\n        ready_reply: readyReply,\n        prompt_used: task.prompt,\n        source_image_field: imageKey,\n        source_image_mime: sourceMimeType,\n        model: \u0027gemini-2.5-flash-image-preview\u0027,\n      },\n      binary: {\n        image: {\n          data: picked.data,\n          mimeType: picked.mimeType || \u0027image/png\u0027,\n          fileName,\n        },\n      },\n    });\n\n    generatedCount += 1;\n    success = true;\n    break;\n  }\n\n  if (!success) {\n    failedTasks.push({\n      phase: task.phase,\n      task_order: task.order,\n      target_size: `${task.width}x${task.height}`,\n      prompt: task.prompt,\n      error: lastError,\n    });\n  }\n\n  if (gapMs \u003e 0) {\n    await sleep(gapMs);\n  }\n}\n\noutputItems.push({\n  json: {\n    status: failedTasks.length ? \u0027partial\u0027 : \u0027success\u0027,\n    generated_count: generatedCount,\n    expected_count: tasks.length,\n    failed_count: failedTasks.length,\n    failed_tasks: failedTasks,\n    ready_step_status: readyStepStatus,\n    ready_reply: readyReply,\n    retry_config: {\n      max_retry: maxRetry,\n      retry_wait_seconds: retryWaitMs / 1000,\n      task_gap_seconds: gapMs / 1000,\n      temperature,\n    },\n    note: failedTasks.length\n      ? \u0027存在失败任务。可提高最大重试次数后重跑。\u0027\n      : \u002711张图片全部成功生成。\u0027,\n  },\n});\n\nreturn outputItems;"
+                                     },
+                      "id":  "1246c8f7-f42f-49bf-84ae-7e6f41e6bece",
+                      "name":  "生成图片（含重试与尺寸校验）",
+                      "type":  "n8n-nodes-base.code",
+                      "position":  [
+                                       -220,
+                                       300
+                                   ],
+                      "typeVersion":  2
+                  }
+              ],
+    "pinData":  {
+
+                },
+    "connections":  {
+                        "表单触发":  {
+                                     "main":  [
+                                                  {
+                                                      "node":  "生成图片（含重试与尺寸校验）",
+                                                      "type":  "main",
+                                                      "index":  0
+                                                  }
+                                              ]
+                                 }
+                    },
+    "active":  false,
+    "settings":  {
+                     "executionOrder":  "v1"
+                 },
+    "versionId":  "4ec7fd1c-7f7f-4f0e-b6e6-70f8aa17c9f2",
+    "tags":  [
+
+             ]
+}

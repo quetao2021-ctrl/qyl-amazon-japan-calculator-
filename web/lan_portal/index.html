@@ -1,0 +1,731 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QYL图片生成功能</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --card: #ffffff;
+      --line: #e5e7eb;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --accent: #ff5a5f;
+      --accent2: #ff8a3d;
+      --ok: #16a34a;
+      --warn: #d97706;
+      --bad: #dc2626;
+      --run: #2563eb;
+      --queued: #64748b;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .page {
+      max-width: 1380px;
+      margin: 0 auto;
+      padding: 12px;
+    }
+
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 22px;
+      font-weight: 800;
+      margin: 0;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+    }
+
+    .tab {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: #374151;
+      font-weight: 700;
+      font-size: 13px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+
+    .tab.active {
+      border: 0;
+      color: #fff;
+      background: linear-gradient(120deg, var(--accent), var(--accent2));
+    }
+
+    .panel {
+      display: none;
+      margin-top: 10px;
+    }
+
+    .panel.active {
+      display: block;
+    }
+
+    .maker-layout {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .left-stack {
+      display: grid;
+      gap: 12px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+    }
+
+    .card h2 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .field {
+      margin-bottom: 10px;
+    }
+
+    .field label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--muted);
+    }
+
+    input[type="text"],
+    input[type="password"],
+    textarea,
+    input[type="file"] {
+      width: 100%;
+      border: 1px solid #d1d5db;
+      border-radius: 10px;
+      font-size: 14px;
+      padding: 9px 10px;
+      color: var(--text);
+      background: #fff;
+    }
+
+    textarea {
+      min-height: 90px;
+      resize: vertical;
+    }
+
+    .files {
+      margin-top: 8px;
+      border: 1px dashed #d1d5db;
+      border-radius: 10px;
+      background: #fff;
+      max-height: 120px;
+      overflow: auto;
+      padding: 8px;
+      font-size: 12px;
+      color: #4b5563;
+      line-height: 1.45;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      border: 0;
+      border-radius: 10px;
+      cursor: pointer;
+      font-weight: 800;
+      font-size: 14px;
+      padding: 9px 13px;
+      color: #fff;
+      background: linear-gradient(120deg, var(--accent), var(--accent2));
+    }
+
+    .btn.secondary {
+      background: #eef2ff;
+      color: #1e40af;
+      border: 1px solid #c7d2fe;
+      font-weight: 700;
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .meta,
+    .msg {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .msg {
+      margin-top: 8px;
+      min-height: 18px;
+    }
+
+    .job-list {
+      display: grid;
+      gap: 8px;
+      max-height: 650px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    .job {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      padding: 10px;
+      cursor: pointer;
+    }
+
+    .job.active {
+      border-color: rgba(255, 90, 95, 0.5);
+      box-shadow: 0 0 0 2px rgba(255, 90, 95, 0.14);
+    }
+
+    .job-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .job-id {
+      color: var(--muted);
+      font-size: 11px;
+      word-break: break-all;
+    }
+
+    .badge {
+      color: #fff;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: lowercase;
+    }
+
+    .b-queued { background: var(--queued); }
+    .b-running { background: var(--run); }
+    .b-success { background: var(--ok); }
+    .b-partial { background: var(--warn); }
+    .b-failed { background: var(--bad); }
+
+    .small {
+      margin: 2px 0;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .small.error {
+      color: var(--bad);
+    }
+
+    .mini-retry {
+      margin-top: 6px;
+      border: 1px solid #c7d2fe;
+      border-radius: 999px;
+      background: #eef2ff;
+      color: #1e3a8a;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      cursor: pointer;
+    }
+
+    .mini-retry:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .detail-toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+
+    .detail-base {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      padding: 10px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .detail-row {
+      margin: 5px 0;
+      word-break: break-word;
+    }
+
+    .gallery {
+      margin-top: 10px;
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    }
+
+    .img-card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      padding: 8px;
+    }
+
+    .img-card img {
+      width: 100%;
+      height: 135px;
+      object-fit: contain;
+      border: 1px solid #eee;
+      border-radius: 8px;
+      background: #fafafa;
+    }
+
+    .img-name {
+      margin: 6px 0;
+      font-size: 11px;
+      color: #4b5563;
+      word-break: break-all;
+    }
+
+    .img-card a {
+      text-decoration: none;
+      color: #dc2626;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .calc-frame {
+      width: 100%;
+      height: calc(100vh - 120px);
+      min-height: 760px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+    }
+
+    @media (max-width: 1100px) {
+      .maker-layout { grid-template-columns: 1fr; }
+      .job-list { max-height: 360px; }
+      .calc-frame { min-height: 620px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="top">
+      <h1 class="brand"><span>🧩</span><span>QYL图片生成功能</span></h1>
+      <div class="tabs">
+        <button class="tab active" data-tab="panel-maker">🖼️ 图片生成</button>
+        <button class="tab" data-tab="panel-calc">🧮 亚马逊计算器</button>
+      </div>
+    </header>
+
+    <section id="panel-maker" class="panel active">
+      <div class="maker-layout">
+        <div class="left-stack">
+          <section class="card">
+            <h2><span>📤</span><span>创建任务</span></h2>
+            <form id="jobForm">
+              <div class="field">
+                <label for="requester">👤 提交人（可选）</label>
+                <input id="requester" name="requester" type="text" />
+              </div>
+
+              <div class="field">
+                <label for="keywords">🏷️ 关键词（必填）</label>
+                <textarea id="keywords" name="keywords" required></textarea>
+              </div>
+
+              <div class="field">
+                <label for="productImages">🖼️ 产品图（必填，可多选，最多10张）</label>
+                <input id="productImages" name="product_images" type="file" accept="image/*" multiple required />
+                <div class="files" id="filePreview">未选择图片</div>
+              </div>
+
+              <div class="field" id="passcodeField" style="display:none;">
+                <label for="passcode">🔐 口令</label>
+                <input id="passcode" name="passcode" type="password" />
+              </div>
+
+              <div class="actions">
+                <button id="submitBtn" class="btn" type="submit">🚀 提交</button>
+                <span id="queueInfo" class="meta"></span>
+              </div>
+              <div id="formMsg" class="msg"></div>
+            </form>
+          </section>
+
+          <section class="card">
+            <h2><span>📄</span><span>任务详情</span></h2>
+            <div class="detail-toolbar">
+              <button id="retryBtn" class="btn secondary" type="button" disabled>🔁 一键重提</button>
+              <button id="downloadAllBtn" class="btn secondary" type="button" disabled>⬇️ 一键下载</button>
+              <span id="retryMsg" class="meta"></span>
+            </div>
+            <div class="detail-base" id="detailBase">请选择任务</div>
+            <div class="gallery" id="detailImages"></div>
+          </section>
+        </div>
+
+        <section class="card">
+          <h2><span>📋</span><span>任务列表</span></h2>
+          <div id="jobList" class="job-list"></div>
+        </section>
+      </div>
+    </section>
+
+    <section id="panel-calc" class="panel">
+      <iframe id="calcFrame" class="calc-frame" src="/calculator" title="亚马逊计算器"></iframe>
+    </section>
+  </div>
+
+  <script>
+    const els = {
+      tabs: Array.from(document.querySelectorAll('.tab')),
+      panels: Array.from(document.querySelectorAll('.panel')),
+      form: document.getElementById('jobForm'),
+      requester: document.getElementById('requester'),
+      keywords: document.getElementById('keywords'),
+      productImages: document.getElementById('productImages'),
+      filePreview: document.getElementById('filePreview'),
+      passcode: document.getElementById('passcode'),
+      passcodeField: document.getElementById('passcodeField'),
+      submitBtn: document.getElementById('submitBtn'),
+      queueInfo: document.getElementById('queueInfo'),
+      formMsg: document.getElementById('formMsg'),
+      retryBtn: document.getElementById('retryBtn'),
+      downloadAllBtn: document.getElementById('downloadAllBtn'),
+      retryMsg: document.getElementById('retryMsg'),
+      jobList: document.getElementById('jobList'),
+      detailBase: document.getElementById('detailBase'),
+      detailImages: document.getElementById('detailImages'),
+      calcFrame: document.getElementById('calcFrame'),
+    };
+
+    let passcodeRequired = false;
+    let calculatorEnabled = true;
+    let maxUploadFiles = 10;
+    let selectedJobId = '';
+    let jobsCache = [];
+
+    function esc(value) {
+      return String(value || '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+      }[char]));
+    }
+
+    function fmtTime(text) {
+      if (!text) return '-';
+      const d = new Date(text);
+      if (Number.isNaN(d.getTime())) return text;
+      return d.toLocaleString();
+    }
+
+    function statusClass(status) {
+      return {
+        queued: 'b-queued',
+        running: 'b-running',
+        success: 'b-success',
+        partial: 'b-partial',
+        failed: 'b-failed',
+      }[status] || 'b-queued';
+    }
+
+    function statusText(status) {
+      return {
+        queued: '排队',
+        running: '运行中',
+        success: '成功',
+        partial: '部分成功',
+        failed: '失败',
+      }[status] || status;
+    }
+
+    function switchTab(panelId) {
+      els.tabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.tab === panelId));
+      els.panels.forEach((panel) => panel.classList.toggle('active', panel.id === panelId));
+    }
+
+    function getSelectedJob() {
+      return jobsCache.find((job) => job.id === selectedJobId) || null;
+    }
+
+    function renderFilePreview() {
+      const files = Array.from(els.productImages.files || []);
+      if (!files.length) {
+        els.filePreview.textContent = '未选择图片';
+        return;
+      }
+      els.filePreview.innerHTML = files.map((file, idx) => `<div>${idx + 1}. ${esc(file.name)}</div>`).join('');
+    }
+
+    function renderJobList(jobs) {
+      jobsCache = jobs;
+      els.jobList.innerHTML = jobs.map((job) => `
+        <div class="job ${job.id === selectedJobId ? 'active' : ''}" data-id="${esc(job.id)}">
+          <div class="job-head">
+            <div class="job-id">${esc(job.id)}</div>
+            <span class="badge ${statusClass(job.status)}">${esc(statusText(job.status))}</span>
+          </div>
+          <div class="small">👤 提交人：${esc(job.requester || '-')}</div>
+          <div class="small">🖼️ 参考图：${Number(job.image_count || 0)} 张</div>
+          <div class="small">✅ 结果图：${(job.result_images || []).length} 张</div>
+          <div class="small">🕒 创建：${esc(fmtTime(job.created_at))}</div>
+          ${job.queue_index > 0 ? `<div class="small">📍 队列位置：${job.queue_index}</div>` : ''}
+          ${job.error ? `<div class="small error">⚠️ 错误：${esc(job.error)}</div>` : ''}
+          <button class="mini-retry" type="button" data-id="${esc(job.id)}">🔁 重提</button>
+        </div>
+      `).join('');
+
+      Array.from(els.jobList.querySelectorAll('.job')).forEach((node) => {
+        node.addEventListener('click', () => {
+          selectedJobId = node.dataset.id;
+          renderJobList(jobsCache);
+          loadDetail(selectedJobId);
+        });
+      });
+
+      Array.from(els.jobList.querySelectorAll('.mini-retry')).forEach((btn) => {
+        btn.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          const sourceId = btn.dataset.id;
+          await retryJobById(sourceId);
+        });
+      });
+
+      if (!selectedJobId && jobs.length) {
+        selectedJobId = jobs[0].id;
+        loadDetail(selectedJobId);
+      }
+
+      if (selectedJobId && !jobs.find((j) => j.id === selectedJobId) && jobs.length) {
+        selectedJobId = jobs[0].id;
+        loadDetail(selectedJobId);
+      }
+    }
+
+    function updateRetryButton(job) {
+      const enabled = Boolean(job);
+      els.retryBtn.disabled = !enabled;
+      const canDownloadAll = Boolean(job && Array.isArray(job.result_images) && job.result_images.length > 0);
+      els.downloadAllBtn.disabled = !canDownloadAll;
+      if (!enabled) {
+        els.retryMsg.textContent = '';
+      }
+    }
+
+    async function loadConfig() {
+      const response = await fetch('/api/config');
+      const config = await response.json();
+      passcodeRequired = Boolean(config.passcode_required);
+      calculatorEnabled = Boolean(config.calculator_enabled);
+      maxUploadFiles = Number(config.max_upload_files || 10);
+
+      els.passcodeField.style.display = passcodeRequired ? 'block' : 'none';
+
+      if (!calculatorEnabled) {
+        const panel = document.getElementById('panel-calc');
+        panel.innerHTML = '<div class="card">当前机器未找到计算器页面文件。</div>';
+      }
+    }
+
+    async function loadJobs() {
+      const response = await fetch('/api/jobs');
+      const data = await response.json();
+      const jobs = data.jobs || [];
+      els.queueInfo.textContent = `运行中：${data.running_job_id || '-'} | 排队：${data.queued_jobs}`;
+      renderJobList(jobs);
+    }
+
+    async function loadDetail(jobId) {
+      if (!jobId) {
+        els.detailBase.textContent = '请选择任务';
+        els.detailImages.innerHTML = '';
+        updateRetryButton(null);
+        return;
+      }
+
+      const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+      if (!response.ok) return;
+
+      const job = await response.json();
+      const imageNames = Array.isArray(job.image_names) ? job.image_names : [];
+
+      els.detailBase.innerHTML = `
+        <div class="detail-row"><b>任务ID：</b>${esc(job.id)}</div>
+        <div class="detail-row"><b>状态：</b>${esc(statusText(job.status))}</div>
+        <div class="detail-row"><b>提交人：</b>${esc(job.requester || '-')}</div>
+        <div class="detail-row"><b>时间：</b>创建 ${esc(fmtTime(job.created_at))} / 开始 ${esc(fmtTime(job.started_at))} / 结束 ${esc(fmtTime(job.finished_at))}</div>
+        <div class="detail-row"><b>关键词：</b>${esc(job.keywords || '-')}</div>
+        <div class="detail-row"><b>参考图：</b>${imageNames.length ? imageNames.map(esc).join('，') : '-'}</div>
+        ${job.error ? `<div class="detail-row" style="color:#dc2626;"><b>错误：</b>${esc(job.error)}</div>` : ''}
+      `;
+
+      const images = Array.isArray(job.result_images) ? job.result_images : [];
+      if (!images.length) {
+        els.detailImages.innerHTML = '';
+      } else {
+        els.detailImages.innerHTML = images.map((file) => {
+          const url = `/api/jobs/${encodeURIComponent(job.id)}/files/${encodeURIComponent(file.name)}`;
+          return `
+            <div class="img-card">
+              <img src="${url}" alt="${esc(file.name)}" />
+              <div class="img-name">${esc(file.name)}</div>
+              <a href="${url}" download>下载</a>
+            </div>
+          `;
+        }).join('');
+      }
+
+      updateRetryButton(job);
+    }
+
+    async function submitJob(event) {
+      event.preventDefault();
+      els.submitBtn.disabled = true;
+      els.formMsg.textContent = '提交中...';
+
+      try {
+        const files = Array.from(els.productImages.files || []);
+        if (!files.length) throw new Error('请先选择图片');
+        if (files.length > maxUploadFiles) {
+          throw new Error(`最多上传 ${maxUploadFiles} 张图片`);
+        }
+
+        const formData = new FormData();
+        formData.append('requester', els.requester.value || '');
+        formData.append('keywords', els.keywords.value || '');
+        if (passcodeRequired) formData.append('passcode', els.passcode.value || '');
+        files.forEach((file) => formData.append('product_images', file));
+
+        const response = await fetch('/api/jobs', {
+          method: 'POST',
+          body: formData,
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '提交失败');
+
+        const job = data.job || (data.jobs || [])[0];
+        els.formMsg.textContent = `提交成功（参考图 ${files.length} 张）`;
+        els.form.reset();
+        renderFilePreview();
+
+        if (job && job.id) selectedJobId = job.id;
+        await loadJobs();
+        await loadDetail(selectedJobId);
+      } catch (error) {
+        els.formMsg.textContent = `提交失败：${error.message || error}`;
+      } finally {
+        els.submitBtn.disabled = false;
+      }
+    }
+
+    async function retryJobById(sourceId) {
+      const source = jobsCache.find((job) => job.id === sourceId);
+      if (!source) return;
+
+      els.retryBtn.disabled = true;
+      els.retryMsg.textContent = `重提中：${sourceId}`;
+
+      try {
+        const body = { requester: els.requester.value || source.requester || '' };
+        if (passcodeRequired) body.passcode = els.passcode.value || '';
+
+        const response = await fetch(`/api/jobs/${encodeURIComponent(sourceId)}/retry`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '重提失败');
+
+        const newJob = data.job || (data.jobs || [])[0];
+        if (newJob && newJob.id) selectedJobId = newJob.id;
+        els.retryMsg.textContent = `已重提：${newJob ? newJob.id : ''}`;
+        await loadJobs();
+        await loadDetail(selectedJobId);
+      } catch (error) {
+        els.retryMsg.textContent = `重提失败：${error.message || error}`;
+      } finally {
+        updateRetryButton(getSelectedJob());
+      }
+    }
+
+    async function retrySelectedJob() {
+      if (!selectedJobId) return;
+      await retryJobById(selectedJobId);
+    }
+
+    function downloadAllSelectedJob() {
+      const job = getSelectedJob();
+      if (!job || !job.id) return;
+      const url = `/api/jobs/${encodeURIComponent(job.id)}/download-all`;
+      window.location.href = url;
+    }
+
+    async function boot() {
+      els.tabs.forEach((tab) => {
+        tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+      });
+      els.productImages.addEventListener('change', renderFilePreview);
+      els.form.addEventListener('submit', submitJob);
+      els.retryBtn.addEventListener('click', retrySelectedJob);
+      els.downloadAllBtn.addEventListener('click', downloadAllSelectedJob);
+
+      await loadConfig();
+      await loadJobs();
+      if (selectedJobId) await loadDetail(selectedJobId);
+
+      setInterval(async () => {
+        await loadJobs();
+        if (selectedJobId) await loadDetail(selectedJobId);
+      }, 4000);
+    }
+
+    boot();
+  </script>
+</body>
+</html>
