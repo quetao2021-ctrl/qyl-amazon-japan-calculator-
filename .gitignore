@@ -1,0 +1,36 @@
+﻿# Runtime / cache
+node_modules/
+output/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+
+# Local browser profiles
+.chatgpt_profile_live/
+.gemini_profile_live/
+.gemini_profile_test/
+.gemini_profile_test2/
+.playwright-cli/
+.probe_profile/
+.probe_profile_download/
+
+# Local temp/work dirs
+_tmp_repo_publish/
+_tmp_repo_check/
+_tmp_repo_refs/
+_rollback_wsl/
+artifacts/
+external/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Secrets
+.env
+
+_tmp_*
+

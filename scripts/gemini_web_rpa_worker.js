@@ -258,6 +258,20 @@ function readTextFile(p) {
   return fs.readFileSync(p, 'utf8');
 }
 
+async function withTimeout(promise, timeoutMs, label) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timeout:${label}`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function chunkArray(arr, size) {
   const out = [];
   for (let i = 0; i < arr.length; i += size) {
@@ -308,6 +322,82 @@ function detectImageDimensions(buffer, mimeHint = '') {
     // noop
   }
   return { format: 'unknown', width: null, height: null };
+}
+
+function forceResizeBufferToTargetPng(buffer, targetWidth, targetHeight, mimeHint = '') {
+  const w = Number(targetWidth || 0);
+  const h = Number(targetHeight || 0);
+  if (!Buffer.isBuffer(buffer) || !buffer.length) return null;
+  if (w <= 0 || h <= 0) return null;
+  if (process.platform !== 'win32') return null;
+
+  const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const inExt = extFromMime(mimeHint || 'image/png');
+  const inPath = path.join(os.tmpdir(), `codex_resize_${stamp}.${inExt}`);
+  const outPath = path.join(os.tmpdir(), `codex_resize_${stamp}_out.png`);
+
+  try {
+    fs.writeFileSync(inPath, buffer);
+    const script = [
+      "$ErrorActionPreference='Stop'",
+      'Add-Type -AssemblyName System.Drawing',
+      `$in='${escapePsSingleQuoted(inPath)}'`,
+      `$out='${escapePsSingleQuoted(outPath)}'`,
+      `$w=${w}`,
+      `$h=${h}`,
+      '$src=[System.Drawing.Image]::FromFile($in)',
+      'try {',
+      '  $bmp=New-Object System.Drawing.Bitmap $w,$h',
+      '  try {',
+      '    $g=[System.Drawing.Graphics]::FromImage($bmp)',
+      '    try {',
+      '      $g.CompositingQuality=[System.Drawing.Drawing2D.CompositingQuality]::HighQuality',
+      '      $g.InterpolationMode=[System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic',
+      '      $g.SmoothingMode=[System.Drawing.Drawing2D.SmoothingMode]::HighQuality',
+      '      $g.PixelOffsetMode=[System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality',
+      '      $g.DrawImage($src, 0, 0, $w, $h)',
+      '    } finally { $g.Dispose() }',
+      '    $bmp.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)',
+      '  } finally { $bmp.Dispose() }',
+      '} finally { $src.Dispose() }',
+    ].join('; ');
+
+    execFileSync('powershell', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      script,
+    ], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+
+    if (!fileExists(outPath)) return null;
+    const resized = fs.readFileSync(outPath);
+    const dim = detectImageDimensions(resized, 'image/png');
+    if (Number(dim.width || 0) !== w || Number(dim.height || 0) !== h) return null;
+    return {
+      buffer: resized,
+      mime: 'image/png',
+      width: dim.width,
+      height: dim.height,
+      method: 'resize_to_target_png',
+      tempPath: outPath,
+    };
+  } catch (err) {
+    log('resize_to_target_failed', {
+      width: w,
+      height: h,
+      error: String(err && err.message ? err.message : err),
+    });
+    return null;
+  } finally {
+    try { if (fileExists(inPath)) fs.unlinkSync(inPath); } catch {}
+    try { if (fileExists(outPath)) fs.unlinkSync(outPath); } catch {}
+  }
 }
 
 function buildDownloadedFileResult(fileInfo, saveBasePath, method) {
@@ -685,29 +775,102 @@ async function dismissBlockingDialogs(page) {
     if (!acted) break;
   }
 }
-async function tryClickNewChat(page) {
-  // GeminiPilot: button[aria-label*='New chat']
-  const selectors = [
-    "button[aria-label*='New chat']",
-    "a[aria-label*='New chat']",
-    '[data-test-id="conversation"] button[aria-label*="New"]',
-    'button:has-text("New chat")',
-    'a:has-text("New chat")',
-  ];
 
+async function clickAnyVisible(page, selectors, timeoutMs = 2800) {
   for (const sel of selectors) {
-    const loc = page.locator(sel).first();
     try {
-      if (await loc.count() > 0 && await loc.isVisible()) {
-        await loc.click({ timeout: 3000 });
-        await page.waitForTimeout(1000);
-        return true;
+      const loc = page.locator(sel);
+      const count = Math.min(await loc.count(), 8);
+      for (let i = 0; i < count; i++) {
+        const one = loc.nth(i);
+        try {
+          if (!(await one.isVisible())) continue;
+          await one.click({ timeout: timeoutMs });
+          return { clicked: true, selector: sel, index: i };
+        } catch {
+          // try next candidate
+        }
       }
     } catch {
-      // continue
+      // invalid or unsupported selector on current page shape
     }
   }
-  return false;
+  return { clicked: false, selector: '', index: -1 };
+}
+
+async function tryClickNewChat(page) {
+  const newChatSelectors = [
+    'button[aria-label*="New chat" i]',
+    'a[aria-label*="New chat" i]',
+    'button[aria-label*="Start new chat" i]',
+    'button[aria-label*="new conversation" i]',
+    '[data-testid*="new-chat" i]',
+    '[data-test-id*="new-chat" i]',
+    'button:has-text("New chat")',
+    'a:has-text("New chat")',
+    'button:has-text("New")',
+  ];
+  const navMenuSelectors = [
+    'button[aria-label*="Main menu" i]',
+    'button[aria-label*="Open navigation" i]',
+    'button[aria-label*="menu" i]',
+    '[data-testid*="menu" i]',
+  ];
+
+  await dismissBlockingDialogs(page);
+  const beforeUrl = page.url();
+
+  let clicked = await clickAnyVisible(page, newChatSelectors, 3200);
+  if (!clicked.clicked) {
+    const navClicked = await clickAnyVisible(page, navMenuSelectors, 1800);
+    if (navClicked.clicked) {
+      await page.waitForTimeout(420);
+      clicked = await clickAnyVisible(page, newChatSelectors, 3200);
+    }
+  }
+
+  if (!clicked.clicked) {
+    try {
+      const heuristicClicked = await page.evaluate(() => {
+        const visible = (el) => {
+          const r = el.getBoundingClientRect();
+          const st = window.getComputedStyle(el);
+          return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
+        };
+        const labelOf = (el) => `${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''} ${el.textContent || ''}`
+          .replace(/\s+/g, ' ')
+          .trim()
+          .toLowerCase();
+        const key = /new chat|start new|new conversation|compose|new/i;
+        const nodes = Array.from(document.querySelectorAll('button,a,[role="button"]'))
+          .filter(visible)
+          .map((el) => ({ el, r: el.getBoundingClientRect(), label: labelOf(el) }))
+          .filter((x) => x.r.left <= 170 && x.r.top <= 320 && key.test(x.label))
+          .sort((a, b) => a.r.top - b.r.top || a.r.left - b.r.left);
+        if (!nodes.length) return false;
+        nodes[0].el.click();
+        return true;
+      });
+      if (heuristicClicked) {
+        clicked = { clicked: true, selector: 'heuristic-left-rail', index: 0 };
+      }
+    } catch {
+      // ignore heuristic failure
+    }
+  }
+
+  if (!clicked.clicked) return false;
+
+  await page.waitForTimeout(1100);
+  const afterUrl = page.url();
+  log('new_chat_clicked', {
+    method: clicked.selector,
+    index: clicked.index,
+    beforeUrl,
+    afterUrl,
+    urlChanged: beforeUrl !== afterUrl,
+  });
+  return true;
 }
 
 function detectModeFromText(raw) {
@@ -926,23 +1089,45 @@ async function ensureProMode(page, timeoutMs = 60000) {
 }
 
 async function attachImage(page, imagePath) {
-  log('attach_image_start', { image: path.basename(String(imagePath || '')) });
+  const imageBase = path.basename(String(imagePath || ''));
+  log('attach_image_start', { image: imageBase });
   await dismissBlockingDialogs(page);
 
-  // 1) direct input[type=file] (visible or hidden)
-  const inputLocator = page.locator('input[type="file"]');
-  const count = await inputLocator.count();
-  for (let i = 0; i < count; i++) {
-    const one = inputLocator.nth(i);
+  const setFilesViaAnyInput = async (stage) => {
+    const inputLocator = page.locator('input[type="file"]');
+    const count = await inputLocator.count();
+    const maxTry = Math.min(count, 8);
+    log('attach_image_input_scan', { image: imageBase, stage, inputCount: count, maxTry });
+    for (let i = 0; i < maxTry; i++) {
+      const one = inputLocator.nth(i);
+      try {
+        await withTimeout(one.setInputFiles(imagePath, { timeout: 3500 }), 6000, `input_set:${stage}:${i}`);
+        await page.waitForTimeout(650);
+        log('attach_image_done', { image: imageBase, method: `direct_input:${stage}:${i}` });
+        return true;
+      } catch {
+        // next input
+      }
+    }
+    return false;
+  };
+
+  const clickAndHandleFileChooser = async (locator, stage) => {
     try {
-      await one.setInputFiles(imagePath, { timeout: 5000 });
-      await page.waitForTimeout(700);
-      log('attach_image_done', { image: path.basename(String(imagePath || '')), method: 'direct_input' });
+      const chooserPromise = page.waitForEvent('filechooser', { timeout: 1800 }).catch(() => null);
+      await withTimeout(locator.click({ timeout: 2200 }), 4500, `chooser_click:${stage}`);
+      const chooser = await chooserPromise;
+      if (!chooser) return false;
+      await withTimeout(chooser.setFiles(imagePath), 6500, `chooser_set:${stage}`);
+      await page.waitForTimeout(650);
+      log('attach_image_done', { image: imageBase, method: `file_chooser:${stage}` });
       return true;
     } catch {
-      // try next
+      return false;
     }
-  }
+  };
+
+  if (await setFilesViaAnyInput('initial')) return true;
 
   const openers = [
     '.upload-button button',
@@ -950,6 +1135,7 @@ async function attachImage(page, imagePath) {
     'button[aria-label*="Upload" i]',
     'button[aria-label*="plus" i]',
     'button[aria-label*="add" i]',
+    'button:has-text("Upload files")',
     'button:has-text("Upload")',
     'button:has-text("Add files")',
     'button:has-text("Tools")',
@@ -963,53 +1149,28 @@ async function attachImage(page, imagePath) {
     'button:has-text("Upload file")',
     '[role="menuitem"]:has-text("Upload")',
     'button:has-text("Upload")',
-    '[role="menuitem"]',
-    '[role="menu"] [role="button"]',
   ];
 
-  // 2) opener -> direct chooser OR opener -> menu item -> chooser
+  // Avoid native file-chooser hangs: click UI controls then inject into input[type=file].
   for (const openSel of openers) {
     const opener = page.locator(openSel).first();
     try {
       if (!(await opener.count()) || !(await opener.isVisible())) continue;
-
-      const chooserFromOpener = page.waitForEvent('filechooser', { timeout: 1800 }).catch(() => null);
-      await opener.click({ timeout: 2500 });
-      const directChooser = await chooserFromOpener;
-      if (directChooser) {
-        await directChooser.setFiles(imagePath);
-        await page.waitForTimeout(700);
-        log('attach_image_done', { image: path.basename(String(imagePath || '')), method: `opener_direct:${openSel}` });
-        return true;
-      }
-
-      await page.waitForTimeout(250);
+      if (await clickAndHandleFileChooser(opener, `opener:${openSel}`)) return true;
+      await withTimeout(opener.click({ timeout: 2200 }), 4500, `opener_click:${openSel}`);
+      await page.waitForTimeout(220);
+      if (await setFilesViaAnyInput(`after_opener:${openSel}`)) return true;
 
       for (const itemSel of uploadItems) {
         const item = page.locator(itemSel).first();
         try {
           if (!(await item.count()) || !(await item.isVisible())) continue;
-
-          const chooserPromise = page.waitForEvent('filechooser', { timeout: 3500 }).catch(() => null);
-          await item.click({ timeout: 2500 });
-          const chooser = await chooserPromise;
-          if (chooser) {
-            await chooser.setFiles(imagePath);
-            await page.waitForTimeout(700);
-            log('attach_image_done', { image: path.basename(String(imagePath || '')), method: `menu_chooser:${openSel}|${itemSel}` });
-            return true;
-          }
-
-          // Some UI creates/updates file input without native chooser event.
-          const menuInput = page.locator('input[type="file"]').first();
-          if (await menuInput.count()) {
-            await menuInput.setInputFiles(imagePath, { timeout: 3000 });
-            await page.waitForTimeout(700);
-            log('attach_image_done', { image: path.basename(String(imagePath || '')), method: `menu_input:${openSel}|${itemSel}` });
-            return true;
-          }
+          if (await clickAndHandleFileChooser(item, `menu_item:${openSel}|${itemSel}`)) return true;
+          await withTimeout(item.click({ timeout: 2200 }), 4500, `menu_item_click:${openSel}|${itemSel}`);
+          await page.waitForTimeout(220);
+          if (await setFilesViaAnyInput(`after_menu:${openSel}|${itemSel}`)) return true;
         } catch {
-          // next menu item selector
+          // next item
         }
       }
     } catch {
@@ -1017,38 +1178,9 @@ async function attachImage(page, imagePath) {
     }
   }
 
-  // 3) keyboard fallback
-  try {
-    const hotkey = process.platform === 'darwin' ? 'Meta+O' : 'Control+O';
-    const chooserPromise = page.waitForEvent('filechooser', { timeout: 3500 }).catch(() => null);
-    await page.keyboard.press(hotkey);
-    const chooser = await chooserPromise;
-    if (chooser) {
-      await chooser.setFiles(imagePath);
-      await page.waitForTimeout(700);
-      log('attach_image_done', { image: path.basename(String(imagePath || '')), method: 'keyboard_hotkey' });
-      return true;
-    }
-  } catch {
-    // ignore
-  }
+  if (await setFilesViaAnyInput('final_retry')) return true;
 
-  // 4) one more direct input pass in case DOM changed after menu interactions
-  const inputLocator2 = page.locator('input[type="file"]');
-  const count2 = await inputLocator2.count();
-  for (let i = 0; i < count2; i++) {
-    const one = inputLocator2.nth(i);
-    try {
-      await one.setInputFiles(imagePath, { timeout: 4000 });
-      await page.waitForTimeout(700);
-      log('attach_image_done', { image: path.basename(String(imagePath || '')), method: 'direct_input_retry' });
-      return true;
-    } catch {
-      // try next
-    }
-  }
-
-  log('attach_image_failed', { image: path.basename(String(imagePath || '')) });
+  log('attach_image_failed', { image: imageBase });
   return false;
 }
 async function fillComposer(page, text) {
@@ -1139,6 +1271,23 @@ function getGeneratingSelectors() {
 }
 
 async function pickSendButton(page) {
+  const viewport = page.viewportSize() || { width: 1480, height: 960 };
+  const composerBox = await getComposerBox(page);
+  const isNearComposerSendZone = (box) => {
+    if (!box) return false;
+    if (!composerBox) return box.y >= viewport.height * 0.48;
+
+    const centerY = box.y + box.height / 2;
+    const minY = composerBox.y - 90;
+    const maxY = composerBox.y + composerBox.height + 120;
+    const minX = composerBox.x + composerBox.width - 220;
+    const maxX = composerBox.x + composerBox.width + 220;
+    if (centerY < minY || centerY > maxY) return false;
+    if (box.x < minX || box.x > maxX) return false;
+    if (box.width > 140 || box.height > 140) return false;
+    return true;
+  };
+
   const sendSelectors = [
     '[aria-label="Send message"]',
     'button[aria-label*="Send message" i]',
@@ -1160,7 +1309,17 @@ async function pickSendButton(page) {
     for (let i = count - 1; i >= 0; i--) {
       const one = loc.nth(i);
       try {
-        if (await one.isVisible() && await one.isEnabled()) return one;
+        if (!(await one.isVisible()) || !(await one.isEnabled())) continue;
+        const box = await one.boundingBox();
+        if (!isNearComposerSendZone(box)) continue;
+
+        const text = await one.evaluate((el) => {
+          const raw = `${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''} ${el.textContent || ''}`;
+          return raw.toLowerCase();
+        }).catch(() => '');
+        if (/(sogou|translate|translator|voice|microphone|\u7ffb\u8bd1|\u8bed\u97f3)/i.test(text)) continue;
+
+        return one;
       } catch {
         // ignore
       }
@@ -1168,7 +1327,6 @@ async function pickSendButton(page) {
   }
 
   // Heuristic fallback: pick the right-most enabled button in lower half.
-  const viewport = page.viewportSize() || { width: 1480, height: 960 };
   const all = page.locator('button,[role="button"]');
   const total = Math.min(await all.count(), 320);
   let best = { idx: -1, score: -1 };
@@ -1179,12 +1337,13 @@ async function pickSendButton(page) {
       if (!(await btn.isVisible()) || !(await btn.isEnabled())) continue;
       const box = await btn.boundingBox();
       if (!box) continue;
-      if (box.y < viewport.height * 0.48) continue;
+      if (!isNearComposerSendZone(box)) continue;
 
       const text = await btn.evaluate((el) => {
         const raw = `${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''} ${el.textContent || ''}`;
         return raw.toLowerCase();
       }).catch(() => '');
+      if (/(sogou|translate|translator|voice|microphone|\u7ffb\u8bd1|\u8bed\u97f3)/i.test(text)) continue;
 
       let score = (box.x + box.width) + box.y;
       if (box.width <= 72 && box.height <= 72) score += 120;
@@ -1205,14 +1364,93 @@ async function sendMessage(page, options = {}) {
   const throwOnTimeout = toBool(options.throwOnTimeout, true);
   const start = Date.now();
   let lastErr = '';
+  let noEffectClicks = 0;
+  const initialComposerText = await readComposerText(page);
+  const normalize = (v) => String(v || '').replace(/\s+/g, ' ').trim();
+  const beforeNorm = normalize(initialComposerText);
+
+  const tryKeyboardSend = async (reason) => {
+    const combos = process.platform === 'darwin'
+      ? ['Meta+Enter', 'Enter']
+      : ['Control+Enter', 'Enter'];
+
+    for (const combo of combos) {
+      try {
+        const composer = await findComposer(page);
+        if (composer && composer.locator) {
+          try {
+            await composer.locator.click({ timeout: 1200 });
+          } catch {
+            // ignore focus click failure
+          }
+          try {
+            await composer.locator.press(combo, { timeout: 1200 });
+          } catch {
+            await page.keyboard.press(combo);
+          }
+        } else {
+          await page.keyboard.press(combo);
+        }
+        await page.waitForTimeout(220);
+        const afterComposerText = await readComposerText(page);
+        const afterNorm = normalize(afterComposerText);
+        const sent = !beforeNorm || !afterNorm || afterNorm !== beforeNorm;
+        if (!sent) {
+          lastErr = `keyboard ${combo} had no send effect; composer text unchanged`;
+          log('send_keyboard_no_effect', {
+            reason,
+            combo,
+            before_len: beforeNorm.length,
+            after_len: afterNorm.length,
+          });
+          continue;
+        }
+        log('send_message_done', {
+          method: 'keyboard',
+          combo,
+          reason,
+          before_len: beforeNorm.length,
+          after_len: afterNorm.length,
+        });
+        return true;
+      } catch (e) {
+        lastErr = String(e?.message || e);
+      }
+    }
+    return false;
+  };
 
   while (Date.now() - start < waitReadyMs) {
+    const busy = await anyVisible(page, getStopSelectors()) || await anyVisible(page, getGeneratingSelectors());
+    if (busy) {
+      await page.waitForTimeout(650);
+      continue;
+    }
+
     const btn = await pickSendButton(page);
     if (btn) {
       try {
         await btn.click({ timeout: 2500 });
-        await page.waitForTimeout(180);
-        log('send_message_done', { method: 'button' });
+        await page.waitForTimeout(260);
+        const afterComposerText = await readComposerText(page);
+        const afterNorm = normalize(afterComposerText);
+        const sent = !beforeNorm || !afterNorm || afterNorm !== beforeNorm;
+        if (!sent) {
+          noEffectClicks += 1;
+          lastErr = 'click had no send effect; composer text unchanged';
+          log('send_click_no_effect', {
+            attempts: noEffectClicks,
+            before_len: beforeNorm.length,
+            after_len: afterNorm.length,
+          });
+          if (noEffectClicks >= 6) {
+            const keyboardSent = await tryKeyboardSend('button_no_effect');
+            if (keyboardSent) return true;
+          }
+          await page.waitForTimeout(500);
+          continue;
+        }
+        log('send_message_done', { method: 'button', before_len: beforeNorm.length, after_len: afterNorm.length });
         return true;
       } catch (e) {
         lastErr = String(e?.message || e);
@@ -1222,17 +1460,10 @@ async function sendMessage(page, options = {}) {
   }
 
   // Keyboard fallback only when not generating.
-  const busy = await anyVisible(page, getStopSelectors());
+  const busy = await anyVisible(page, getStopSelectors()) || await anyVisible(page, getGeneratingSelectors());
   if (!busy) {
-    try {
-      const combo = process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter';
-      await page.keyboard.press(combo);
-      await page.waitForTimeout(200);
-      log('send_message_done', { method: 'keyboard', combo });
-      return true;
-    } catch (e) {
-      lastErr = String(e?.message || e);
-    }
+    const keyboardSent = await tryKeyboardSend('fallback');
+    if (keyboardSent) return true;
   }
 
   if (throwOnTimeout) {
@@ -1314,6 +1545,45 @@ function candidateKey(c) {
   return `unknown|${c.width || 0}x${c.height || 0}|${c.displayWidth || 0}x${c.displayHeight || 0}|${c.x || 0},${c.y || 0}`;
 }
 
+function keepLatestAssistantCandidates(candidates) {
+  const list = Array.isArray(candidates) ? candidates.filter(Boolean) : [];
+  if (!list.length) return [];
+
+  const assistantFirst = list.filter((c) => !c.userLikely);
+  const base = assistantFirst.length ? assistantFirst : list;
+  const sorted = base
+    .slice()
+    .sort((a, b) => {
+      const by = Number(b && b.y || 0);
+      const ay = Number(a && a.y || 0);
+      if (by !== ay) return by - ay;
+      return Number(b && b.domIndex || 0) - Number(a && a.domIndex || 0);
+    });
+  if (!sorted.length) return [];
+
+  const newest = sorted[0];
+  const newestY = Number(newest.y || 0);
+  const newestDom = Number(newest.domIndex || 0);
+  const yWindow = 860;
+  const domWindow = 28;
+
+  const latest = sorted.filter((c) => {
+    const y = Number(c && c.y || 0);
+    const dom = Number(c && c.domIndex || 0);
+    return y >= (newestY - yWindow) || dom >= (newestDom - domWindow);
+  });
+  return latest.sort((a, b) => Number(b.domIndex || 0) - Number(a.domIndex || 0));
+}
+
+function buildKeywordHintTokens(keywords) {
+  return String(keywords || '')
+    .split(/[,，、\/\s]+/)
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 2)
+    .slice(0, 3)
+    .map((x) => x.toLowerCase());
+}
+
 function isTransientNavigationError(err) {
   const msg = String(err && err.message ? err.message : err || '');
   return /execution context was destroyed/i.test(msg)
@@ -1347,6 +1617,34 @@ async function collectImageCandidates(page) {
             const rect = img.getBoundingClientRect();
             const naturalWidth = Number(img.naturalWidth || 0);
             const naturalHeight = Number(img.naturalHeight || 0);
+            const displayWidth = Math.round(rect.width || img.clientWidth || 0);
+            const displayHeight = Math.round(rect.height || img.clientHeight || 0);
+            const roleHintParts = [];
+            let cursor = img;
+            let depth = 0;
+            while (cursor && depth < 7) {
+              if (cursor.dataset) {
+                for (const [k, v] of Object.entries(cursor.dataset)) {
+                  if (!v) continue;
+                  if (/role|author|sender|owner/i.test(String(k))) roleHintParts.push(String(v));
+                }
+              }
+              const aria = cursor.getAttribute ? (cursor.getAttribute('aria-label') || '') : '';
+              const title = cursor.getAttribute ? (cursor.getAttribute('title') || '') : '';
+              if (aria) roleHintParts.push(String(aria));
+              if (title) roleHintParts.push(String(title));
+              const cls = cursor.className ? String(cursor.className) : '';
+              if (cls) roleHintParts.push(cls);
+              cursor = cursor.parentElement;
+              depth += 1;
+            }
+            const roleHint = roleHintParts.join(' ').toLowerCase();
+            const viewportWidth = Number(window.innerWidth || 0);
+            const rightAligned = Number(rect.x || 0) > viewportWidth * 0.52;
+            const thumbLike = Math.max(displayWidth, displayHeight) <= 280;
+            const userByHint = /\b(user|you|human|customer|self)\b/.test(roleHint);
+            const assistantByHint = /\b(assistant|model|gemini|bot)\b/.test(roleHint);
+            const userLikely = userByHint || (!assistantByHint && rightAligned && thumbLike);
             return {
               markerId: img.dataset.codexImgId,
               src: img.currentSrc || img.src || '',
@@ -1355,11 +1653,13 @@ async function collectImageCandidates(page) {
               width: naturalWidth,
               height: naturalHeight,
               complete: !!img.complete,
-              displayWidth: Math.round(rect.width || img.clientWidth || 0),
-              displayHeight: Math.round(rect.height || img.clientHeight || 0),
+              displayWidth,
+              displayHeight,
               x: Math.round(rect.x || 0),
               y: Math.round(rect.y || 0),
               domIndex,
+              userLikely,
+              assistantLikely: !userLikely,
             };
           })
           .filter((x) => {
@@ -1367,6 +1667,7 @@ async function collectImageCandidates(page) {
             if (x.src.startsWith('https://ssl.gstatic.com')) return false;
             if (!x.complete) return false;
             if ((x.width || 0) < 200 || (x.height || 0) < 200) return false;
+            if (x.userLikely) return false;
             const displayW = x.displayWidth || 0;
             const displayH = x.displayHeight || 0;
             const displayArea = displayW * displayH;
@@ -1870,7 +2171,6 @@ async function tryDownloadFromGeminiUi(page, debugDir, task, attempt, preferredC
   if (preferredIndexes.length) {
     for (const idx of preferredIndexes) {
       const img = page.locator('img').nth(idx);
-      let box = null;
       const markerId = `target_${Date.now()}_${idx}`;
       try {
         if (!(await img.count()) || !(await img.isVisible())) continue;
@@ -1883,7 +2183,10 @@ async function tryDownloadFromGeminiUi(page, debugDir, task, attempt, preferredC
         await img.hover({ timeout: 1200 });
         await page.waitForTimeout(180);
         const marked = await markTargetCardFromImage(img, markerId);
-        box = marked && marked.cardBox ? marked.cardBox : (marked && marked.imgBox ? marked.imgBox : await img.boundingBox());
+        if (!(marked && marked.ok)) {
+          await clearTargetCardMarks(page);
+          continue;
+        }
       } catch {
         await clearTargetCardMarks(page);
         continue;
@@ -1893,11 +2196,6 @@ async function tryDownloadFromGeminiUi(page, debugDir, task, attempt, preferredC
       if (fromMarkedCard) {
         await clearTargetCardMarks(page);
         return fromMarkedCard;
-      }
-      const near = await trySelectorsNear(box);
-      if (near) {
-        await clearTargetCardMarks(page);
-        return near;
       }
       try {
         await img.click({ timeout: 1500 });
@@ -1910,16 +2208,6 @@ async function tryDownloadFromGeminiUi(page, debugDir, task, attempt, preferredC
       if (fromMarkedCardAfterClick) {
         await clearTargetCardMarks(page);
         return fromMarkedCardAfterClick;
-      }
-      const globalAfterClick = await trySelectors();
-      if (globalAfterClick) {
-        await clearTargetCardMarks(page);
-        return globalAfterClick;
-      }
-      const toolbarAfterClick = await tryTopToolbarButtons();
-      if (toolbarAfterClick) {
-        await clearTargetCardMarks(page);
-        return toolbarAfterClick;
       }
       try { await page.keyboard.press('Escape'); } catch {}
       await page.waitForTimeout(120);
@@ -2115,6 +2403,55 @@ async function hasKeywordsContextInConversation(page, keywords) {
   }
 }
 
+async function ensureBootstrapSubmitted(page, keywords, meta = {}) {
+  const tail = await getConversationTail(page, 20000);
+  const low = String(tail || '').toLowerCase();
+  const hasPrefix = /product keywords:/i.test(low);
+  const hintTokens = buildKeywordHintTokens(keywords);
+  const hasHint = !hintTokens.length || hintTokens.some((token) => low.includes(token));
+  const hasKeywordsContext = await hasKeywordsContextInConversation(page, keywords);
+  let recentUserThumbCount = 0;
+  try {
+    recentUserThumbCount = await page.evaluate(() => {
+      const imgs = Array.from(document.querySelectorAll('img'));
+      const vw = Number(window.innerWidth || 0);
+      const vh = Number(window.innerHeight || 0);
+      return imgs.filter((img) => {
+        const r = img.getBoundingClientRect();
+        if (!r || r.width <= 0 || r.height <= 0) return false;
+        const rightHalf = r.x > vw * 0.45;
+        const nearBottom = r.y > vh * 0.3;
+        const thumbLike = Math.max(r.width, r.height) <= 280;
+        const naturalOk = Math.max(Number(img.naturalWidth || 0), Number(img.naturalHeight || 0)) >= 80;
+        return rightHalf && nearBottom && thumbLike && naturalOk;
+      }).length;
+    });
+  } catch {
+    recentUserThumbCount = 0;
+  }
+
+  const expectedImages = Math.max(0, Number(meta.expectedImages || 0));
+  const sentImages = Math.max(0, Number(meta.sentImages || 0));
+  const requiresImageProof = expectedImages > 0;
+  const hasImageProof = sentImages >= expectedImages || recentUserThumbCount > 0;
+  const ok = hasPrefix && hasHint && hasKeywordsContext && (!requiresImageProof || hasImageProof);
+  log('bootstrap_submission_check', {
+    ...meta,
+    ok,
+    hasPrefix,
+    hasHint,
+    hasKeywordsContext,
+    hasImageProof,
+    expectedImages,
+    sentImages,
+    recentUserThumbCount,
+    hintTokenCount: hintTokens.length,
+  });
+  if (!ok) {
+    throw new Error('Bootstrap validation failed: product images/keywords were not confirmed in conversation.');
+  }
+}
+
 async function resendRequestedInputs(page, imagePaths, keywords, idleNoBusyMs, genTimeoutSec, options = {}) {
   const needImages = toBool(options.needImages, false);
   const needKeywords = toBool(options.needKeywords, false);
@@ -2157,6 +2494,15 @@ async function resendRequestedInputs(page, imagePaths, keywords, idleNoBusyMs, g
     needsImages: needImages,
     needsKeywords: sentKeywords,
   });
+  if (needImages || sentKeywords) {
+    await ensureBootstrapSubmitted(page, keywords, {
+      phase: 'recovery_bootstrap',
+      needsImages: needImages,
+      needsKeywords: sentKeywords,
+      expectedImages: needImages ? imagePaths.length : 0,
+      sentImages: sentCount,
+    });
+  }
   await page.waitForTimeout(800);
   return { sentImages: sentCount, sentKeywords };
 }
@@ -2335,33 +2681,29 @@ function buildTaskPrompt(task, keywords, attempt, failureReasonCode = '') {
 
   return `Continue generating A+ image #${indexInPhase}.`;
 }
-function pickFromPool(pool, task, acceptedVisuals = []) {
-  const candidates = pool
-    .map((x, idx) => ({ idx, item: x }))
-    .filter(({ item }) => isAcceptableResolution(task, item.width, item.height));
-  if (!candidates.length) return null;
+function pickFromPool(pool, poolContentHashes, task, acceptedVisuals = []) {
+  if (!Array.isArray(pool) || !pool.length) return null;
+  let duplicateFallbackIdx = -1;
 
-  const targetRatio = task.width / task.height;
-  candidates.sort((a, b) => {
-    const ratioA = (Number(a.item.width || 0) > 0 && Number(a.item.height || 0) > 0)
-      ? (Number(a.item.width) / Number(a.item.height))
-      : 0;
-    const ratioB = (Number(b.item.width || 0) > 0 && Number(b.item.height || 0) > 0)
-      ? (Number(b.item.width) / Number(b.item.height))
-      : 0;
-    const scoreA = Math.abs(ratioA - targetRatio) * 100000 - Number(a.item.area || 0);
-    const scoreB = Math.abs(ratioB - targetRatio) * 100000 - Number(b.item.area || 0);
-    return scoreA - scoreB;
-  });
-
-  for (const candidate of candidates) {
-    const visualHash = ensureVisualHash(candidate.item);
+  for (let idx = 0; idx < pool.length; idx++) {
+    const item = pool[idx];
+    if (!item) continue;
+    if (!isAcceptableResolution(task, item.width, item.height)) continue;
+    const visualHash = ensureVisualHash(item);
     const dup = findVisualDuplicate(visualHash, acceptedVisuals);
     if (dup) {
+      if (duplicateFallbackIdx < 0) duplicateFallbackIdx = idx;
       continue;
     }
-    const idx = candidate.idx;
-    if (idx >= 0) return pool.splice(idx, 1)[0];
+    const taken = pool.splice(idx, 1)[0];
+    if (taken && taken.hash) poolContentHashes.delete(taken.hash);
+    return taken || null;
+  }
+
+  if (duplicateFallbackIdx >= 0) {
+    const taken = pool.splice(duplicateFallbackIdx, 1)[0];
+    if (taken && taken.hash) poolContentHashes.delete(taken.hash);
+    return taken || null;
   }
   return null;
 }
@@ -2396,8 +2738,10 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
   const viewportHeight = Math.max(680, Math.min(2200, toInt(args['viewport-height'], 960)));
   const pageZoom = Math.max(0.55, Math.min(1.0, Number(args['page-zoom'] ?? 0.8)));
   const strictProSwitch = toBool(args['strict-pro-switch'], false);
+  const strictNewChat = toBool(args['strict-new-chat'], true);
   const maxImagesPerMessage = Math.max(1, Math.min(10, toInt(args['max-images-per-message'], 10)));
   const keepOpenOnFailureSec = Math.max(0, Math.min(300, toInt(args['keep-open-on-failure-sec'], 30)));
+  const keepOpenAfterRunSec = Math.max(0, Math.min(86400, toInt(args['keep-open-after-run-sec'], 0)));
   const ensureProAtStart = toBool(args['ensure-pro-at-start'], true);
   const attachEachTask = toBool(args['attach-each-task'], false);
   const stopAfterBootstrap = toBool(args['stop-after-bootstrap'], false);
@@ -2445,8 +2789,10 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
       viewport_height: viewportHeight,
       page_zoom: pageZoom,
       strict_pro_switch: strictProSwitch,
+      strict_new_chat: strictNewChat,
       max_images_per_message: maxImagesPerMessage,
       keep_open_on_failure_sec: keepOpenOnFailureSec,
+      keep_open_after_run_sec: keepOpenAfterRunSec,
       ensure_pro_at_start: ensureProAtStart,
       attach_each_task: attachEachTask,
       stop_after_bootstrap: stopAfterBootstrap,
@@ -2535,7 +2881,10 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
 
     if (openNewChat) {
       const clicked = await tryClickNewChat(page);
-      log('new_chat', { clicked });
+      log('new_chat', { clicked, strict: strictNewChat });
+      if (!clicked && strictNewChat) {
+        throw new Error('Failed to open a new chat. Aborting to prevent context contamination.');
+      }
       await waitForComposer(page, 20000);
       await applyPageZoom(page, pageZoom);
       await dismissBlockingDialogs(page);
@@ -2608,6 +2957,7 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
     });
 
     let globalImageIndex = 0;
+    let lastBootstrapSettle = null;
     for (let ci = 0; ci < chunks.length; ci++) {
       const chunk = chunks[ci];
       const isLastChunk = ci === chunks.length - 1;
@@ -2650,6 +3000,18 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
         chunk: ci + 1,
         isLastChunk,
       });
+      if (isLastChunk) {
+        lastBootstrapSettle = bootstrapSettle;
+      }
+      if (isLastChunk) {
+        await ensureBootstrapSubmitted(page, keywords, {
+          phase: 'bootstrap',
+          chunk: ci + 1,
+          settleStatus: bootstrapSettle.status,
+          expectedImages: imagePaths.length,
+          sentImages: globalImageIndex,
+        });
+      }
       await page.waitForTimeout(1200);
       await captureTraceShot(page, debugDir, `bootstrap_chunk_${ci + 1}_done`, {
         isLastChunk,
@@ -2701,9 +3063,14 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
     const baselineCandidates = await collectImageCandidates(page);
     let knownCandidateKeys = new Set(baselineCandidates.map(candidateKey));
     const pool = [];
-    let pendingBootstrapCandidates = baselineCandidates.slice();
+    const poolContentHashes = new Set();
+    let pendingBootstrapCandidates = keepLatestAssistantCandidates(
+      (lastBootstrapSettle && Array.isArray(lastBootstrapSettle.newCandidates))
+        ? lastBootstrapSettle.newCandidates.slice()
+        : []
+    );
     if (pendingBootstrapCandidates.length) {
-      log('bootstrap_pending_candidates', {
+      log('bootstrap_generated_candidates_carry_over', {
         count: pendingBootstrapCandidates.length,
         indexes: pendingBootstrapCandidates.map((x) => x.domIndex),
       });
@@ -2743,7 +3110,10 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
 
         if (openNewChat) {
           const clicked = await tryClickNewChat(page);
-          log('flow_restart_new_chat', { restartIndex, clicked });
+          log('flow_restart_new_chat', { restartIndex, clicked, strict: strictNewChat });
+          if (!clicked && strictNewChat) {
+            throw new Error('Flow restart failed: cannot open a new chat safely.');
+          }
           await waitForComposer(page, 20000);
           await applyPageZoom(page, pageZoom);
           await dismissBlockingDialogs(page);
@@ -2804,25 +3174,31 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
           const beforeRestartSubmitCandidates = await collectImageCandidates(page);
           const beforeRestartSubmitTail = await getConversationTail(page);
           await sendMessage(page, { waitReadyMs: 90000, throwOnTimeout: true });
-          await waitForReferenceSubmissionSettled(page, beforeRestartSubmitCandidates, beforeRestartSubmitTail, genTimeoutSec, idleNoBusyMs, {
+          const restartBootstrapSettle = await waitForReferenceSubmissionSettled(page, beforeRestartSubmitCandidates, beforeRestartSubmitTail, genTimeoutSec, idleNoBusyMs, {
             phase: 'flow_restart_bootstrap',
             chunk: ci + 1,
             isLastChunk,
             restartIndex,
           });
+          if (isLastChunk) {
+            await ensureBootstrapSubmitted(page, keywords, {
+              phase: 'flow_restart_bootstrap',
+              chunk: ci + 1,
+              isLastChunk,
+              restartIndex,
+              settleStatus: restartBootstrapSettle.status,
+              expectedImages: imagePaths.length,
+              sentImages: restartGlobalImageIndex,
+            });
+          }
           await page.waitForTimeout(1000);
         }
 
         const fresh = await collectImageCandidates(page);
         knownCandidateKeys = new Set(fresh.map(candidateKey));
-        pendingBootstrapCandidates = fresh.slice();
-        if (pendingBootstrapCandidates.length) {
-          log('flow_restart_pending_candidates', {
-            restartIndex,
-            count: pendingBootstrapCandidates.length,
-            indexes: pendingBootstrapCandidates.map((x) => x.domIndex),
-          });
-        }
+        pool.length = 0;
+        poolContentHashes.clear();
+        pendingBootstrapCandidates = [];
         flowRestartCount += 1;
         summary.flow_restarts.push({
           index: flowRestartCount,
@@ -2862,37 +3238,6 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
         debug_screenshots: [],
       };
 
-      const fromPool = pickFromPool(pool, task, acceptedVisuals);
-      if (fromPool) {
-        const ext = extFromMime(fromPool.mime);
-        const outName = `${String(task.idx).padStart(2, '0')}_${task.id}_${task.width}x${task.height}.${ext}`;
-        const outPath = path.join(outputDir, outName);
-        fs.writeFileSync(outPath, fromPool.buffer);
-        const contentHash = fromPool.hash || sha1(fromPool.buffer);
-        if (fromPool.signature) usedSignatures.add(fromPool.signature);
-        usedContentHashes.add(contentHash);
-
-        item.status = 'ok';
-        item.attempts = 0;
-        item.output_file = outPath;
-        item.actual_size = `${fromPool.width || '?'}x${fromPool.height || '?'}`;
-        item.source_method = `${fromPool.method || 'pool'}/pool`;
-        item.failure_reason_code = null;
-        const poolVisualHash = ensureVisualHash(fromPool, outPath);
-        if (poolVisualHash) {
-          acceptedVisuals.push({
-            taskId: task.id,
-            file: outPath,
-            visualHash: poolVisualHash,
-          });
-        }
-
-        summary.tasks.push(item);
-        bumpPhase(task.phase, 'ok');
-        log('task_use_pool', { task: task.id, output: outPath });
-        continue;
-      }
-
       for (let attempt = 1; attempt <= maxRetry; attempt++) {
         item.attempts = attempt;
         log('task_attempt', { task: task.id, attempt });
@@ -2906,10 +3251,31 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
         const extractedHashes = new Set();
         let newCandidates = [];
         let reusedBootstrapCandidates = false;
+        let reusedPoolCandidate = false;
         let beforeSet = null;
 
-        if (pendingBootstrapCandidates.length) {
-          newCandidates = pendingBootstrapCandidates.slice();
+        const pooled = pickFromPool(pool, poolContentHashes, task, acceptedVisuals);
+        if (pooled && pooled.buffer) {
+          if (!pooled.hash) pooled.hash = sha1(pooled.buffer);
+          extracted.push(pooled);
+          extractedHashes.add(pooled.hash);
+          reusedPoolCandidate = true;
+          log('task_use_pool_candidate', {
+            task: task.id,
+            attempt,
+            width: pooled.width,
+            height: pooled.height,
+            pool_remaining: pool.length,
+          });
+          await captureTraceShot(page, debugDir, `${task.id}_attempt_${attempt}_use_pool_candidate`, {
+            pool_remaining: pool.length,
+            width: pooled.width,
+            height: pooled.height,
+          });
+        }
+
+        if (pendingBootstrapCandidates.length && !reusedPoolCandidate) {
+          newCandidates = keepLatestAssistantCandidates(pendingBootstrapCandidates.slice());
           pendingBootstrapCandidates = [];
           reusedBootstrapCandidates = newCandidates.length > 0;
           if (reusedBootstrapCandidates) {
@@ -2925,7 +3291,7 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
           }
         }
 
-        const needAttach = attachEachTask && !reusedBootstrapCandidates;
+        const needAttach = attachEachTask && !reusedBootstrapCandidates && !reusedPoolCandidate;
         if (needAttach) {
           const attached = await attachImage(page, imagePaths[0]);
           if (!attached) {
@@ -2938,7 +3304,7 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
           }
         }
 
-        if (!reusedBootstrapCandidates && !recoveredInputsForTask) {
+        if (!reusedBootstrapCandidates && !reusedPoolCandidate && !recoveredInputsForTask) {
           const inputReply = await detectModelNeedsInputsReply(page);
           const needsInputs = !!(inputReply.needsImages || inputReply.needsKeywords);
           if (needsInputs) {
@@ -2950,30 +3316,49 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
               preview: String(inputReply.latestReplyText || '').slice(0, 240),
             });
             await captureTraceShot(page, debugDir, `${task.id}_attempt_${attempt}_needs_inputs`);
-            try {
-              const recoverResult = await resendRequestedInputs(page, imagePaths, keywords, idleNoBusyMs, genTimeoutSec, {
-                needImages: !!inputReply.needsImages,
-                needKeywords: !!inputReply.needsKeywords,
+            const candidatesBeforeRecover = keepLatestAssistantCandidates(await collectImageCandidates(page))
+              .filter((c) => {
+                const key = candidateKey(c);
+                return !usedSignatures.has(key) && !knownCandidateKeys.has(key);
               });
-              const freshAfterRecover = await collectImageCandidates(page);
-              knownCandidateKeys = new Set(freshAfterRecover.map(candidateKey));
-              recoveredInputsForTask = true;
-              log('model_needs_inputs_recovered', {
+            if (candidatesBeforeRecover.length) {
+              newCandidates = candidatesBeforeRecover;
+              reusedBootstrapCandidates = true;
+              log('model_needs_inputs_skip_recover_due_existing_candidates', {
                 task: task.id,
                 attempt,
-                baseline: freshAfterRecover.length,
-                sentImages: recoverResult.sentImages,
-                sentKeywords: recoverResult.sentKeywords,
+                candidateCount: candidatesBeforeRecover.length,
+                indexes: candidatesBeforeRecover.map((x) => x.domIndex),
               });
-              await captureTraceShot(page, debugDir, `${task.id}_attempt_${attempt}_inputs_recovered`, { baseline: freshAfterRecover.length });
-            } catch (recoverErr) {
-              log('model_needs_inputs_recover_failed', { task: task.id, attempt, error: String(recoverErr && recoverErr.message ? recoverErr.message : recoverErr) });
-              await captureTraceShot(page, debugDir, `${task.id}_attempt_${attempt}_inputs_recover_failed`);
+              await captureTraceShot(page, debugDir, `${task.id}_attempt_${attempt}_needs_inputs_skip_recover`, {
+                candidateCount: candidatesBeforeRecover.length,
+              });
+            } else {
+              try {
+                const recoverResult = await resendRequestedInputs(page, imagePaths, keywords, idleNoBusyMs, genTimeoutSec, {
+                  needImages: !!inputReply.needsImages,
+                  needKeywords: !!inputReply.needsKeywords,
+                });
+                const freshAfterRecover = await collectImageCandidates(page);
+                knownCandidateKeys = new Set(freshAfterRecover.map(candidateKey));
+                recoveredInputsForTask = true;
+                log('model_needs_inputs_recovered', {
+                  task: task.id,
+                  attempt,
+                  baseline: freshAfterRecover.length,
+                  sentImages: recoverResult.sentImages,
+                  sentKeywords: recoverResult.sentKeywords,
+                });
+                await captureTraceShot(page, debugDir, `${task.id}_attempt_${attempt}_inputs_recovered`, { baseline: freshAfterRecover.length });
+              } catch (recoverErr) {
+                log('model_needs_inputs_recover_failed', { task: task.id, attempt, error: String(recoverErr && recoverErr.message ? recoverErr.message : recoverErr) });
+                await captureTraceShot(page, debugDir, `${task.id}_attempt_${attempt}_inputs_recover_failed`);
+              }
             }
           }
         }
 
-        if (!reusedBootstrapCandidates) {
+        if (!reusedBootstrapCandidates && !reusedPoolCandidate) {
           const beforeSend = await collectImageCandidates(page);
           beforeSet = new Set([...knownCandidateKeys, ...beforeSend.map(candidateKey)]);
 
@@ -2988,7 +3373,7 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
 
           const pollCycles = Math.max(3, Math.min(90, Math.ceil(postIdlePollSec / 2)));
           for (let poll = 1; poll <= pollCycles; poll++) {
-            const snap = await collectImageCandidates(page);
+            const snap = keepLatestAssistantCandidates(await collectImageCandidates(page));
             newCandidates = snap.filter((c) => {
               const key = candidateKey(c);
               return !beforeSet.has(key) && !usedSignatures.has(key) && !knownCandidateKeys.has(key);
@@ -2998,27 +3383,82 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
           }
         }
 
-        if (!newCandidates.length) {
+        if (!newCandidates.length && !extracted.length) {
           const directDownloadVisible = await hasVisibleGeminiDownloadButton(page);
           if (directDownloadVisible) {
             log('download_button_visible_without_candidate_skip', { task: task.id, attempt });
             await captureTraceShot(page, debugDir, `${task.id}_attempt_${attempt}_download_button_visible_without_candidate_skip`);
-            const refreshed = await reloadCurrentConversationPage(page, `${task.id}_attempt_${attempt}_pending_image_frame`);
-            if (refreshed) {
-              await captureTraceShot(page, debugDir, `${task.id}_attempt_${attempt}_after_page_refresh`);
-              if (!reusedBootstrapCandidates && beforeSet) {
-                const snapAfterRefresh = await collectImageCandidates(page);
-                newCandidates = snapAfterRefresh.filter((c) => {
-                  const key = candidateKey(c);
-                  return !beforeSet.has(key) && !usedSignatures.has(key) && !knownCandidateKeys.has(key);
+            const directDownloaded = await tryDownloadFromGeminiUi(
+              page,
+              debugDir,
+              task,
+              `${attempt}_direct`,
+              null
+            );
+            if (directDownloaded && directDownloaded.ok && directDownloaded.buffer) {
+              const byRefName = looksLikeReferenceFileName(directDownloaded.suggested_filename, referenceNameTokens);
+              if (byRefName) {
+                log('ui_download_direct_reference_skip', {
+                  task: task.id,
+                  attempt,
+                  suggested: directDownloaded.suggested_filename || '',
                 });
-                if (newCandidates.length) {
-                  log('new_candidates_detected_after_refresh', {
+              } else if (!isAcceptableResolution(task, directDownloaded.width, directDownloaded.height)) {
+                log('ui_download_direct_resolution_skip', {
+                  task: task.id,
+                  attempt,
+                  width: directDownloaded.width,
+                  height: directDownloaded.height,
+                  expected: `${task.width}x${task.height}`,
+                });
+              } else {
+                const directHash = sha1(directDownloaded.buffer);
+                if (!extractedHashes.has(directHash)) {
+                  extractedHashes.add(directHash);
+                  extracted.push({
+                    signature: `ui-download|${task.id}|a${attempt}|direct|${directHash}`,
+                    mime: directDownloaded.mime,
+                    buffer: directDownloaded.buffer,
+                    width: directDownloaded.width,
+                    height: directDownloaded.height,
+                    method: `${directDownloaded.method || 'ui-download'}/direct`,
+                    tempPath: directDownloaded.tempPath || '',
+                    area: (directDownloaded.width || 0) * (directDownloaded.height || 0),
+                    hash: directHash,
+                  });
+                  log('ui_download_direct_done', {
                     task: task.id,
                     attempt,
-                    count: newCandidates.length,
-                    indexes: newCandidates.map((x) => x.domIndex),
+                    width: directDownloaded.width,
+                    height: directDownloaded.height,
                   });
+                  await captureTraceShot(page, debugDir, `${task.id}_attempt_${attempt}_direct_download_success`);
+                }
+              }
+            }
+
+            if (!extracted.length) {
+              const refreshed = await reloadCurrentConversationPage(page, `${task.id}_attempt_${attempt}_pending_image_frame`);
+              if (refreshed) {
+                await captureTraceShot(page, debugDir, `${task.id}_attempt_${attempt}_after_page_refresh`);
+                if (!reusedBootstrapCandidates && beforeSet) {
+                  const snapAfterRefresh = keepLatestAssistantCandidates(await collectImageCandidates(page));
+                  newCandidates = snapAfterRefresh.filter((c) => {
+                    const key = candidateKey(c);
+                    return !beforeSet.has(key) && !usedSignatures.has(key) && !knownCandidateKeys.has(key);
+                  });
+                  const oldAfterRefresh = snapAfterRefresh.filter((c) => !newCandidates.includes(c));
+                  for (const oldOne of oldAfterRefresh) {
+                    knownCandidateKeys.add(candidateKey(oldOne));
+                  }
+                  if (newCandidates.length) {
+                    log('new_candidates_detected_after_refresh', {
+                      task: task.id,
+                      attempt,
+                      count: newCandidates.length,
+                      indexes: newCandidates.map((x) => x.domIndex),
+                    });
+                  }
                 }
               }
             }
@@ -3052,14 +3492,14 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
           }
 
           // Download-first: strictly target only current new generated nodes.
-          // If Gemini returns a batch in one reply, download the whole batch and
-          // leave the extras in pool for the following tasks.
+          // Process one image per task to avoid reusing old/extra outputs.
           for (let dlTry = 1; dlTry <= uiDownloadRetries; dlTry++) {
             log('ui_download_try_start', { task: task.id, attempt, dlTry, candidateCount: newCandidates.length });
             await captureTraceShot(page, debugDir, `${task.id}_attempt_${attempt}_download_try_${dlTry}_before`);
             let batchAdded = 0;
-            for (let candidateIdx = 0; candidateIdx < newCandidates.length; candidateIdx++) {
-              const preferredCandidate = newCandidates[candidateIdx];
+            const candidatesToDownload = newCandidates.slice();
+            for (let candidateIdx = 0; candidateIdx < candidatesToDownload.length; candidateIdx++) {
+              const preferredCandidate = candidatesToDownload[candidateIdx];
               const uiDownloaded = await tryDownloadFromGeminiUi(
                 page,
                 debugDir,
@@ -3148,6 +3588,46 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
             if (dlTry < uiDownloadRetries) await page.waitForTimeout(1200);
           }
 
+          // Fallback: even if candidate-targeted attempts missed, if a visible
+          // download button can still return bytes, accept it and continue.
+          if (!extracted.length && requireUiDownload) {
+            const directFallback = await tryDownloadFromGeminiUi(
+              page,
+              debugDir,
+              task,
+              `${attempt}_direct_fallback`,
+              null
+            );
+            if (directFallback && directFallback.ok && directFallback.buffer) {
+              const byRefName = looksLikeReferenceFileName(directFallback.suggested_filename, referenceNameTokens);
+              if (!byRefName && isAcceptableResolution(task, directFallback.width, directFallback.height)) {
+                const fbHash = sha1(directFallback.buffer);
+                if (!extractedHashes.has(fbHash)) {
+                  extractedHashes.add(fbHash);
+                  extracted.push({
+                    signature: `ui-download|${task.id}|a${attempt}|direct-fallback|${fbHash}`,
+                    mime: directFallback.mime,
+                    buffer: directFallback.buffer,
+                    width: directFallback.width,
+                    height: directFallback.height,
+                    method: `${directFallback.method || 'ui-download'}/direct-fallback`,
+                    tempPath: directFallback.tempPath || '',
+                    area: (directFallback.width || 0) * (directFallback.height || 0),
+                    hash: fbHash,
+                  });
+                  log('ui_download_direct_fallback_done', {
+                    task: task.id,
+                    attempt,
+                    width: directFallback.width,
+                    height: directFallback.height,
+                    suggested: directFallback.suggested_filename || '',
+                  });
+                  await captureTraceShot(page, debugDir, `${task.id}_attempt_${attempt}_direct_fallback_success`);
+                }
+              }
+            }
+          }
+
           // Optional fallback only when strict UI-download mode is disabled.
           if (!extracted.length && !requireUiDownload) {
             for (let i = 0; i < newCandidates.length; i++) {
@@ -3214,10 +3694,12 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
             return (b.area || 0) - (a.area || 0);
           });
         let chosen = null;
+        let duplicateFallback = null;
         for (const candidate of ranked) {
           const visualHash = ensureVisualHash(candidate);
           const dup = findVisualDuplicate(visualHash, acceptedVisuals);
           if (dup) {
+            if (!duplicateFallback) duplicateFallback = candidate;
             log('visual_duplicate_candidate_skip', {
               task: task.id,
               attempt,
@@ -3231,25 +3713,73 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
           break;
         }
         if (!chosen) {
-          item.failure_reason_code = 'visual_duplicate';
-          item.error = 'All generated candidates are visually too similar to previous accepted outputs.';
-          await captureFailureShot(page, debugDir, task.id, attempt, 'visual_duplicate', item, summary.failed_screenshots);
-          log('visual_duplicate', { task: task.id, attempt, extracted_count: extracted.length });
-          if (attempt < maxRetry) await page.waitForTimeout(retryWaitSec * 1000);
-          continue;
+          if (duplicateFallback) {
+            chosen = duplicateFallback;
+            log('visual_duplicate_accepted_for_progress', {
+              task: task.id,
+              attempt,
+              reason: 'download_success_progress_first',
+            });
+          } else {
+            item.failure_reason_code = 'visual_duplicate';
+            item.error = 'All generated candidates are visually too similar to previous accepted outputs.';
+            await captureFailureShot(page, debugDir, task.id, attempt, 'visual_duplicate', item, summary.failed_screenshots);
+            log('visual_duplicate', { task: task.id, attempt, extracted_count: extracted.length });
+            if (attempt < maxRetry) await page.waitForTimeout(retryWaitSec * 1000);
+            continue;
+          }
         }
 
-        const ext = extFromMime(chosen.mime);
+        let finalImage = chosen;
+        if (generatedOnly.length > 1) {
+          let queued = 0;
+          for (const candidate of generatedOnly) {
+            if (candidate === chosen) continue;
+            const hash = candidate.hash || sha1(candidate.buffer);
+            candidate.hash = hash;
+            if (referenceContentHashes.has(hash)) continue;
+            if (usedContentHashes.has(hash)) continue;
+            if (poolContentHashes.has(hash)) continue;
+            const canFitFutureTask = tasks.some((t) => isAcceptableResolution(t, candidate.width, candidate.height));
+            if (!canFitFutureTask) continue;
+            pool.push(candidate);
+            poolContentHashes.add(hash);
+            queued += 1;
+          }
+          if (queued > 0) {
+            log('queue_extra_downloaded_candidates', {
+              task: task.id,
+              attempt,
+              queued,
+              pool_size: pool.length,
+            });
+          }
+        }
+
+        const resized = forceResizeBufferToTargetPng(
+          chosen.buffer,
+          task.width,
+          task.height,
+          chosen.mime || 'image/png'
+        );
+        if (resized && resized.buffer) {
+          finalImage = {
+            ...chosen,
+            ...resized,
+            method: `${chosen.method || 'ui-download'}/${resized.method}`,
+          };
+        }
+
+        const ext = extFromMime(finalImage.mime || chosen.mime);
         const outName = `${String(task.idx).padStart(2, '0')}_${task.id}_${task.width}x${task.height}.${ext}`;
         const outPath = path.join(outputDir, outName);
-        const contentHash = chosen.hash || sha1(chosen.buffer);
+        const contentHash = sha1(finalImage.buffer);
         if (usedContentHashes.has(contentHash)) {
-          item.failure_reason_code = 'duplicate_image';
-          item.error = 'Captured image duplicates a previous task result.';
-          await captureFailureShot(page, debugDir, task.id, attempt, 'duplicate_image', item, summary.failed_screenshots);
-          log('duplicate_image', { task: task.id, attempt });
-          if (attempt < maxRetry) await page.waitForTimeout(retryWaitSec * 1000);
-          continue;
+          log('duplicate_content_allowed_for_progress', {
+            task: task.id,
+            attempt,
+            contentHash,
+          });
         }
 
         if (!isAcceptableResolution(task, chosen.width, chosen.height)) {
@@ -3267,27 +3797,8 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
           continue;
         }
 
-        fs.writeFileSync(outPath, chosen.buffer);
-        const chosenVisualHash = ensureVisualHash(chosen, outPath);
-        const rest = extracted.filter((x) => x !== chosen);
-        const visualCompareBase = chosenVisualHash
-          ? acceptedVisuals.concat([{ taskId: task.id, file: outPath, visualHash: chosenVisualHash }])
-          : acceptedVisuals;
-        for (const r of rest) {
-          const restVisualHash = ensureVisualHash(r);
-          const dup = findVisualDuplicate(restVisualHash, visualCompareBase);
-          if (dup) {
-            log('visual_duplicate_pool_skip', {
-              task: task.id,
-              attempt,
-              method: r.method || '',
-              againstTask: dup.taskId,
-              distance: dup.distance,
-            });
-            continue;
-          }
-          pool.push(r);
-        }
+        fs.writeFileSync(outPath, finalImage.buffer);
+        const chosenVisualHash = ensureVisualHash(finalImage, outPath);
 
         usedSignatures.add(chosen.signature);
         usedContentHashes.add(contentHash);
@@ -3301,8 +3812,8 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
 
         item.status = 'ok';
         item.output_file = outPath;
-        item.actual_size = `${chosen.width || '?'}x${chosen.height || '?'}`;
-        item.source_method = chosen.method || 'unknown';
+        item.actual_size = `${finalImage.width || '?'}x${finalImage.height || '?'}`;
+        item.source_method = finalImage.method || chosen.method || 'unknown';
         item.failure_reason_code = null;
         item.error = null;
 
@@ -3402,10 +3913,13 @@ function pickFromPool(pool, task, acceptedVisuals = []) {
     process.exitCode = 1;
   } finally {
     if (context) {
-      if (!headless && process.exitCode === 1 && keepOpenOnFailureSec > 0) {
-        log('keep_browser_open_before_close', { seconds: keepOpenOnFailureSec });
+      const keepSec = !headless
+        ? (keepOpenAfterRunSec > 0 ? keepOpenAfterRunSec : ((process.exitCode === 1 && keepOpenOnFailureSec > 0) ? keepOpenOnFailureSec : 0))
+        : 0;
+      if (keepSec > 0) {
+        log('keep_browser_open_before_close', { seconds: keepSec, exitCode: process.exitCode || 0 });
         try {
-          await page.waitForTimeout(keepOpenOnFailureSec * 1000);
+          await page.waitForTimeout(keepSec * 1000);
         } catch {
           // ignore
         }

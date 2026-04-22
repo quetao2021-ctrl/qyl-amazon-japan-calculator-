@@ -1,0 +1,159 @@
+{
+  "name": "generate-1-7-figure-with-nano-banana",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Prompt\nCreate a 1/7 scale commercialized figurine of the characters in the picture, in a realistic style, in a real environment. The figurine is placed on a computer desk. The figurine has a round transparent acrylic base, with no text on the base. The content on the computer screen is the Zbrush modeling process of this figurine.Next to the computer screen is a packaging box with rounded corner design and a transparent front window, the figure inside is clearly visible.",
+        "height": 368,
+        "width": 304
+      },
+      "id": "8579984a-dcb8-449c-aef8-3082e2ae6b46",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -960,
+        720
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "formTitle": "Upload Image",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Image",
+              "fieldType": "file",
+              "multipleFiles": false,
+              "acceptFileTypes": "image/*",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b5984534-834f-44bf-ae22-456a213c462e",
+      "name": "上传图片",
+      "type": "n8n-nodes-base.formTrigger",
+      "position": [
+        -592,
+        832
+      ],
+      "webhookId": "254a1336-57d2-4ba0-93e1-e8460fc94f00",
+      "typeVersion": 2.3
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Encodes multiple binary files from an n8n input item into Base64 strings.\n *\n * This code assumes it is running in an n8n \"Code\" or \"Function\" node\n * where 'this' refers to the node's context and 'helpers' are available.\n *\n * @returns {object} An object containing an array of file objects,\n * each with a 'path' and 'data' (Base64 string).\n */\nconst results = {};\n\nconst bin = $input.first().binary['Image'];\n\n// Use n8n's helper function to get the file buffer.\nconst binBuffer = await this.helpers.getBinaryDataBuffer(0, 'Image');\n\n// Push a new object to the results array.\nresults.img_url = `data:${bin.mimeType};base64,${Buffer.from(binBuffer).toString('base64')}`\nresults.api_key = $input.first().json['API Key']\nresults.prompt = $input.first().json['Prompt']\n\n// Return the final object in the expected format for the next node.\nreturn results;\n"
+      },
+      "id": "414c9ad8-d83b-40a5-b492-da94dff5fd4e",
+      "name": "转换为JSON",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        -336,
+        832
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer 你的APIKEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"google/gemini-2.5-flash-image-preview\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\":\"Create a 1/7 scale commercialized figurine of the characters in the picture, in a realistic style, in a real environment. The figurine is placed on a computer desk. The figurine has a round transparent acrylic base, with no text on the base. The content on the computer screen is the Zbrush modeling process of this figurine.Next to the computer screen is a packaging box with rounded corner design and a transparent front window, the figure inside is clearly visible.\"\n        },\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"{{ $json.img_url }}\"          \n          }\n        }\n      ]\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "da929fc2-620c-4ffd-8d77-a6c29ead257d",
+      "name": "请求 Openrouter",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        -48,
+        832
+      ],
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "fa5f375f-cddc-4f7b-a018-67c28015d18b",
+              "name": "image_url",
+              "type": "string",
+              "value": "={{$json.choices[0].message.images[0].image_url.url}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d317e59e-46b5-4a07-9bde-aacb09e80119",
+      "name": "格式化输出并展示图片",
+      "type": "n8n-nodes-base.set",
+      "position": [
+        208,
+        832
+      ],
+      "typeVersion": 3.4
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "上传图片": {
+      "main": [
+        [
+          {
+            "node": "转换为JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "转换为JSON": {
+      "main": [
+        [
+          {
+            "node": "请求 Openrouter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "请求 Openrouter": {
+      "main": [
+        [
+          {
+            "node": "格式化输出并展示图片",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "57d2524a-395a-46a9-9341-f74a8c5f453e",
+  "meta": {
+    "instanceId": "f24b6849a974bb63de727996fcf6bc82672ecd552ca03e0ba09e91f9759593c6"
+  },
+  "id": "8RjbaSVh7FTahger",
+  "tags": []
+}

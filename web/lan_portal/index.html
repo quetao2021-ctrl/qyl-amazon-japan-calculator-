@@ -256,6 +256,11 @@
 
     .small.error {
       color: var(--bad);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      word-break: break-word;
     }
 
     .mini-retry {
@@ -446,6 +451,7 @@
     let maxUploadFiles = 10;
     let selectedJobId = '';
     let jobsCache = [];
+    let suspendRefreshUntil = 0;
 
     function esc(value) {
       return String(value || '').replace(/[&<>"']/g, (char) => ({
@@ -484,6 +490,13 @@
       }[status] || status;
     }
 
+    function shortError(value, limit = 140) {
+      const text = String(value || '').replace(/\s+/g, ' ').trim();
+      if (!text) return '';
+      if (text.length <= limit) return text;
+      return `${text.slice(0, limit)}...`;
+    }
+
     function switchTab(panelId) {
       els.tabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.tab === panelId));
       els.panels.forEach((panel) => panel.classList.toggle('active', panel.id === panelId));
@@ -515,7 +528,7 @@
           <div class="small">✅ 结果图：${(job.result_images || []).length} 张</div>
           <div class="small">🕒 创建：${esc(fmtTime(job.created_at))}</div>
           ${job.queue_index > 0 ? `<div class="small">📍 队列位置：${job.queue_index}</div>` : ''}
-          ${job.error ? `<div class="small error">⚠️ 错误：${esc(job.error)}</div>` : ''}
+          ${job.error ? `<div class="small error" title="${esc(job.error)}">⚠️ 错误：${esc(shortError(job.error))}</div>` : ''}
           <button class="mini-retry" type="button" data-id="${esc(job.id)}">🔁 重提</button>
         </div>
       `).join('');
@@ -554,6 +567,30 @@
       els.downloadAllBtn.disabled = !canDownloadAll;
       if (!enabled) {
         els.retryMsg.textContent = '';
+      }
+    }
+
+    async function downloadImageFile(url, fileName) {
+      suspendRefreshUntil = Date.now() + 12000;
+      try {
+        const response = await fetch(url, { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`下载失败（HTTP ${response.status}）`);
+        }
+        const blob = await response.blob();
+        if (!blob || !blob.size) {
+          throw new Error('下载失败（空文件）');
+        }
+        const objectUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objectUrl;
+        a.download = fileName || 'image.png';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
+      } catch (error) {
+        els.retryMsg.textContent = `下载失败：${error.message || error}`;
       }
     }
 
@@ -614,10 +651,19 @@
             <div class="img-card">
               <img src="${url}" alt="${esc(file.name)}" />
               <div class="img-name">${esc(file.name)}</div>
-              <a href="${url}" download>下载</a>
+              <a href="${url}" class="img-download" data-url="${esc(url)}" data-file-name="${esc(file.name)}" download>下载</a>
             </div>
           `;
         }).join('');
+        Array.from(els.detailImages.querySelectorAll('.img-download')).forEach((link) => {
+          link.addEventListener('click', async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const url = link.dataset.url || link.getAttribute('href') || '';
+            const fileName = link.dataset.fileName || 'image.png';
+            await downloadImageFile(url, fileName);
+          });
+        });
       }
 
       updateRetryButton(job);
@@ -720,6 +766,7 @@
       if (selectedJobId) await loadDetail(selectedJobId);
 
       setInterval(async () => {
+        if (Date.now() < suspendRefreshUntil) return;
         await loadJobs();
         if (selectedJobId) await loadDetail(selectedJobId);
       }, 4000);
