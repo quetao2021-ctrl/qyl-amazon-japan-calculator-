@@ -6,8 +6,8 @@ $ErrorActionPreference = 'Stop'
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ServerScript = Join-Path $Root 'scripts\gemini_lan_server.js'
-$HealthUrl = 'http://127.0.0.1:8787/api/health'
-$PortalUrl = 'http://127.0.0.1:8787'
+$HealthUrl = 'http://127.0.0.1:8788/api/health'
+$PortalUrl = 'http://127.0.0.1:8788'
 $NodeModules = Join-Path $Root 'node_modules'
 $PlaywrightModule = Join-Path $NodeModules 'playwright'
 $PwCacheDir = Join-Path $env:LOCALAPPDATA 'ms-playwright'
@@ -123,7 +123,12 @@ function Start-Server() {
   }
 
   Write-Step 'Starting local server...'
-  $proc = Start-Process node -ArgumentList 'scripts/gemini_lan_server.js' -WorkingDirectory $Root -PassThru
+  $proc = Start-Process powershell -ArgumentList @(
+    '-NoProfile',
+    '-ExecutionPolicy', 'Bypass',
+    '-Command',
+    "Set-Location -LiteralPath '$Root'; `$env:PORT='8788'; node scripts/gemini_lan_server.js"
+  ) -WorkingDirectory $Root -PassThru
   if (-not (Wait-Health 30)) {
     throw "Local server failed to start. Check: $ServerScript"
   }

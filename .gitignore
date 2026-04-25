@@ -6,22 +6,23 @@ __pycache__/
 *.pyo
 *.log
 
-# Local browser profiles
+# Local browser profiles / login sessions
 .chatgpt_profile_live/
+.chatgpt_profile_seed_test/
 .gemini_profile_live/
 .gemini_profile_test/
 .gemini_profile_test2/
 .playwright-cli/
 .probe_profile/
 .probe_profile_download/
+.chrome-for-testing/
 
 # Local temp/work dirs
-_tmp_repo_publish/
-_tmp_repo_check/
-_tmp_repo_refs/
+_tmp_*/
 _rollback_wsl/
 artifacts/
 external/
+tmp/
 
 # OS/editor
 .DS_Store
@@ -31,6 +32,3 @@ Thumbs.db
 
 # Secrets
 .env
-
-_tmp_*
-

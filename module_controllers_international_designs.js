@@ -1,1 +1,0 @@
-require.register("controllers/international_designs",function(e,t,i){var n=t("models/international_designs"),r=t("views/international_designs"),a=function(e){function t(e){i(e.model)}function i(e){if(!o){var t=new n(e);o=new r({delegate:a,model:t})}return o}var a=this,o=null;this.appendViewTo=function(e){$(e).append(o.el)},t(e)};i.exports=a})

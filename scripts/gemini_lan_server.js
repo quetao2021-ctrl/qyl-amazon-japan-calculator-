@@ -6,13 +6,17 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn, execFileSync } = require('child_process');
+const iconv = require('iconv-lite');
 
 const ROOT = path.resolve(__dirname, '..');
 const GEMINI_WORKER_PATH = path.join(ROOT, 'scripts', 'gemini_web_rpa_worker.js');
-const GPT_WORKER_PATH = path.join(ROOT, 'scripts', 'chatgpt_web_chat_worker.js');
-const DEFAULT_PROMPT_PATH = path.join(ROOT, 'prompts', 'fixed_prompt_for_gemini_web_rpa.txt');
+const CHATGPT_WORKER_PATH = path.join(ROOT, 'scripts', 'chatgpt_web_image_worker.js');
+const DEFAULT_GEMINI_PROMPT_PATH = path.join(ROOT, 'prompts', 'fixed_prompt_for_gemini_web_rpa.txt');
+const DEFAULT_CHATGPT_PROMPT_PATH = path.join(ROOT, 'prompts', 'fixed_prompt_for_chatgpt_web_rpa.txt');
 const DEFAULT_GEMINI_SESSION_DIR = path.join(ROOT, '.gemini_profile_live');
-const DEFAULT_GPT_SESSION_DIR = path.join(ROOT, '.chatgpt_profile_live');
+const DEFAULT_CHATGPT_SESSION_DIR = path.join(ROOT, '.chatgpt_profile_live');
+const DEFAULT_CHATGPT_BASE_URL = String(process.env.CHATGPT_BASE_URL || 'https://chatgpt.com/?openaicom_referred=true');
+const DEFAULT_CHATGPT_CDP_URL = String(process.env.CHATGPT_CDP_URL || '').trim();
 
 const JOB_ROOT = path.join(ROOT, 'output', 'lan_portal_jobs');
 const UPLOAD_ROOT = path.join(ROOT, 'output', 'lan_portal_uploads');
@@ -85,6 +89,64 @@ function readJsonSafe(p) {
   } catch {
     return null;
   }
+}
+
+function normalizeKeywordsInput(value) {
+  const text = String(value || '');
+  let fixed = text;
+  try {
+    // Repair common UTF-8 text that was decoded as latin1.
+    if (/[\u00c3\u00c2\u00e2]/.test(fixed) || fixed.includes('\ufffd')) {
+      const utf8FromLatin1 = Buffer.from(fixed, 'latin1').toString('utf8');
+      if (utf8FromLatin1 && !utf8FromLatin1.includes('\ufffd')) fixed = utf8FromLatin1;
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    // Repair occasional GBK/UTF-8 mojibake without changing normal Japanese/Chinese keywords.
+    if (/[\uE000-\uF8FF]/.test(fixed) || /[\u95bf\u6d93\u59f4\u6d34\u6c2d]/.test(fixed)) {
+      const utf8FromGbk = iconv.decode(iconv.encode(fixed, 'gbk'), 'utf8');
+      if (utf8FromGbk && !/[\uE000-\uF8FF]/.test(utf8FromGbk)) fixed = utf8FromGbk;
+    }
+  } catch {
+    // ignore
+  }
+  return fixed
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((one) => one.trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function simplifyJobError(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (/Browser\.getWindowForTarget|Browser window not found|launchPersistentContext|spawn EPERM|spawn EACCES|CDP fallback Chrome exited/i.test(text)) {
+    return 'ChatGPT browser window startup failed. Please retry.';
+  }
+  if (/ECONNREFUSED.*9222|connect.*127\.0\.0\.1:9222|CDP fallback connect failed/i.test(text)) {
+    return 'ChatGPT real browser is not connected. Start the ChatGPT Chrome debug window first, then retry.';
+  }
+  if (/Send button not found or not enabled/i.test(text)) {
+    return 'Send button is not available in current page state. Please retry.';
+  }
+  if (/Send button had no effect/i.test(text)) {
+    return 'Message was not sent from composer. Please retry.';
+  }
+  if (/Target page, context or browser has been closed/i.test(text)) {
+    return 'Browser page was closed unexpectedly. Please retry.';
+  }
+  if (/Cloudflare verification not completed/i.test(text)) {
+    return 'Cloudflare verification is pending. Complete verification then retry.';
+  }
+  if (/ChatGPT login not completed|composer not found/i.test(text)) {
+    return 'ChatGPT login not completed. Please log in and retry.';
+  }
+  if (text.length > 240) return `${text.slice(0, 240)}...`;
+  return text;
 }
 
 function parseTimeMs(value) {
@@ -176,22 +238,45 @@ if (!fs.existsSync(GEMINI_WORKER_PATH)) {
   console.error(`Worker script not found: ${GEMINI_WORKER_PATH}`);
   process.exit(1);
 }
-if (!fs.existsSync(GPT_WORKER_PATH)) {
-  console.error(`Worker script not found: ${GPT_WORKER_PATH}`);
-  process.exit(1);
-}
-if (!fs.existsSync(DEFAULT_PROMPT_PATH)) {
-  console.error(`Fixed prompt file not found: ${DEFAULT_PROMPT_PATH}`);
+if (!fs.existsSync(DEFAULT_GEMINI_PROMPT_PATH)) {
+  console.error(`Gemini fixed prompt file not found: ${DEFAULT_GEMINI_PROMPT_PATH}`);
   process.exit(1);
 }
 if (!CALC_HTML_PATH) {
   console.warn('Calculator HTML not found; /calculator route will be disabled.');
 }
 
+const PROVIDER_MAP = {
+  gemini: {
+    id: 'gemini',
+    label: 'Gemini 图片生成',
+    worker_path: GEMINI_WORKER_PATH,
+    fixed_prompt_file: DEFAULT_GEMINI_PROMPT_PATH,
+    session_dir: DEFAULT_GEMINI_SESSION_DIR,
+    enabled: fs.existsSync(GEMINI_WORKER_PATH) && fs.existsSync(DEFAULT_GEMINI_PROMPT_PATH),
+  },
+  chatgpt: {
+    id: 'chatgpt',
+    label: 'ChatGPT 图片生成',
+    worker_path: CHATGPT_WORKER_PATH,
+    fixed_prompt_file: DEFAULT_CHATGPT_PROMPT_PATH,
+    session_dir: DEFAULT_CHATGPT_SESSION_DIR,
+    base_url: DEFAULT_CHATGPT_BASE_URL,
+    cdp_url: DEFAULT_CHATGPT_CDP_URL,
+    enabled: fs.existsSync(CHATGPT_WORKER_PATH) && fs.existsSync(DEFAULT_CHATGPT_PROMPT_PATH),
+  },
+};
+
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static(PUBLIC_DIR));
+app.use(express.static(PUBLIC_DIR, {
+  setHeaders(res, filePath) {
+    if (path.basename(filePath).toLowerCase() === 'index.html') {
+      res.setHeader('Cache-Control', 'no-store');
+    }
+  },
+}));
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -200,12 +285,35 @@ const upload = multer({
 
 const jobs = new Map();
 const queue = [];
-let runningJobId = null;
+const runningJobIds = new Set();
+const PROVIDERS = Object.keys(PROVIDER_MAP).filter((id) => PROVIDER_MAP[id] && PROVIDER_MAP[id].enabled);
+if (!PROVIDERS.length) {
+  console.error('No enabled providers found. Please verify worker and prompt files.');
+  process.exit(1);
+}
+const DEFAULT_PROVIDER = PROVIDERS.includes('gemini') ? 'gemini' : PROVIDERS[0];
+const runningByProvider = Object.fromEntries(PROVIDERS.map((id) => [id, null]));
+
+function normalizeProvider(value) {
+  const p = String(value || DEFAULT_PROVIDER).trim().toLowerCase();
+  return PROVIDERS.includes(p) ? p : DEFAULT_PROVIDER;
+}
+
+function getProviderPromptPath(provider) {
+  const p = normalizeProvider(provider);
+  return PROVIDER_MAP[p].fixed_prompt_file;
+}
+
+function getPrimaryRunningJobId() {
+  for (const id of runningJobIds) return id;
+  return null;
+}
 
 function serializeJobForIndex(job) {
   return {
     id: job.id,
-    provider: job.provider || 'gemini',
+    batch_id: job.batch_id || '',
+    provider: normalizeProvider(job.provider),
     status: job.status,
     created_at: job.created_at,
     started_at: job.started_at,
@@ -262,10 +370,40 @@ function normalizeStoredJob(raw) {
   const outputDir = raw.output_dir ? String(raw.output_dir) : path.join(JOB_ROOT, String(raw.id));
   const imageNames = Array.isArray(raw.image_names) ? raw.image_names : [];
   const imagePaths = Array.isArray(raw.image_paths) ? raw.image_paths : [];
+  const resultImages = listOutputImages(outputDir);
+  let summaryPath = raw.summary_path || '';
+  if (!summaryPath) {
+    try {
+      const maybe = fs.readdirSync(outputDir, { withFileTypes: true })
+        .filter((d) => d.isFile() && /^summary_.*\.json$/i.test(d.name))
+        .map((d) => path.join(outputDir, d.name))
+        .sort()
+        .pop();
+      if (maybe) summaryPath = maybe;
+    } catch {
+      // no summary file
+    }
+  }
+  const summary = summaryPath ? readJsonSafe(summaryPath) : null;
   const startedAt = raw.started_at || null;
   let status = raw.status || 'failed';
   let error = raw.error || '';
   let finishedAt = raw.finished_at || null;
+  let summaryResult = raw.summary_result || '';
+  let resultText = raw.result_text || '';
+
+  if (summary) {
+    summaryResult = summary.result || summaryResult;
+    resultText = String(summary.reply_text || summary.result_text || resultText || '').trim();
+    if (summary.result === 'ok' && (resultImages.length > 0 || resultText)) {
+      status = 'success';
+      error = '';
+      if (!finishedAt) finishedAt = new Date().toISOString();
+    } else if (summary.result === 'partial' && (resultImages.length > 0 || resultText)) {
+      status = 'partial';
+      if (!finishedAt) finishedAt = new Date().toISOString();
+    }
+  }
 
   if (status === 'running' || status === 'queued') {
     status = 'failed';
@@ -275,24 +413,25 @@ function normalizeStoredJob(raw) {
 
   return {
     id: String(raw.id),
-    provider: raw.provider || 'gemini',
+    batch_id: raw.batch_id || '',
+    provider: normalizeProvider(raw.provider),
     status,
     created_at: raw.created_at || new Date().toISOString(),
     started_at: startedAt,
     finished_at: finishedAt,
     requester: raw.requester || 'guest',
-    keywords: raw.keywords || '',
+    keywords: normalizeKeywordsInput(raw.keywords || ''),
     image_name: raw.image_name || imageNames[0] || '',
     image_names: imageNames,
     image_paths: imagePaths,
     output_dir: outputDir,
-    summary_path: raw.summary_path || '',
-    summary_result: raw.summary_result || '',
-    result_text: raw.result_text || '',
-    result_images: listOutputImages(outputDir),
+    summary_path: summaryPath || '',
+    summary_result: summaryResult,
+    result_text: resultText,
+    result_images: resultImages,
     queue_index: 0,
     last_event: raw.last_event || '',
-    error,
+    error: simplifyJobError(error),
     logs: [],
     pid: null,
   };
@@ -325,7 +464,7 @@ function cleanupExpiredJobs() {
   const expiredIds = [];
 
   for (const [id, job] of jobs.entries()) {
-    if (id === runningJobId) continue;
+    if (runningJobIds.has(id)) continue;
     const createdAtMs = parseTimeMs(job.created_at);
     if (!createdAtMs) continue;
     if ((now - createdAtMs) > JOB_RETENTION_MS) {
@@ -362,7 +501,8 @@ function pushLog(job, text) {
 function compactJob(job) {
   return {
     id: job.id,
-    provider: job.provider || 'gemini',
+    batch_id: job.batch_id || '',
+    provider: normalizeProvider(job.provider),
     status: job.status,
     created_at: job.created_at,
     started_at: job.started_at,
@@ -380,7 +520,7 @@ function compactJob(job) {
   };
 }
 
-function createJobFromFiles({ files, requester, keywords, provider }) {
+function createJobFromFiles({ files, requester, keywords, provider, batchId }) {
   const id = jobId();
   const outputDir = path.join(JOB_ROOT, id);
   ensureDir(outputDir);
@@ -398,13 +538,14 @@ function createJobFromFiles({ files, requester, keywords, provider }) {
 
   return {
     id,
-    provider: provider || 'gemini',
+    batch_id: batchId || '',
+    provider: normalizeProvider(provider),
     status: 'queued',
     created_at: new Date().toISOString(),
     started_at: null,
     finished_at: null,
     requester: requester || 'guest',
-    keywords,
+    keywords: normalizeKeywordsInput(keywords),
     image_name: imageNames[0] || '',
     image_names: imageNames,
     image_paths: imagePaths,
@@ -421,11 +562,11 @@ function createJobFromFiles({ files, requester, keywords, provider }) {
   };
 }
 
-function createJobFromExistingJob(sourceJob, { requester, keywords } = {}) {
+function createJobFromExistingJob(sourceJob, { requester, keywords, provider } = {}) {
   const sourcePaths = Array.isArray(sourceJob.image_paths) ? sourceJob.image_paths : [];
   const sourceNames = Array.isArray(sourceJob.image_names) ? sourceJob.image_names : [];
-  const provider = sourceJob.provider || 'gemini';
-  if (!sourcePaths.length && provider !== 'gpt') {
+  const targetProvider = normalizeProvider(provider || sourceJob.provider || 'gemini');
+  if (!sourcePaths.length) {
     throw new Error('Source job has no reference images.');
   }
 
@@ -442,8 +583,8 @@ function createJobFromExistingJob(sourceJob, { requester, keywords } = {}) {
   return createJobFromFiles({
     files,
     requester: requester || sourceJob.requester || 'guest',
-    keywords: (keywords && String(keywords).trim()) || sourceJob.keywords || '',
-    provider,
+    keywords: normalizeKeywordsInput((keywords && String(keywords).trim()) || sourceJob.keywords || ''),
+    provider: targetProvider,
   });
 }
 
@@ -463,60 +604,52 @@ function parseLineAsJson(line) {
 }
 
 async function runJob(job) {
+  const provider = normalizeProvider(job.provider);
+  const providerCfg = PROVIDER_MAP[provider];
+  const fixedPromptPath = getProviderPromptPath(provider);
   job.status = 'running';
   job.started_at = new Date().toISOString();
   job.queue_index = 0;
   pushLog(job, 'Job started.');
   saveJobsIndex();
 
-  let args = [];
-  if ((job.provider || 'gemini') === 'gpt') {
-    args = [
-      GPT_WORKER_PATH,
-      '--prompt', job.keywords,
-      '--output-dir', job.output_dir,
-      '--session-dir', DEFAULT_GPT_SESSION_DIR,
-      '--login-wait-sec', String(WORKER_DEFAULTS.loginWaitSec),
-      '--gen-timeout-sec', String(WORKER_DEFAULTS.genTimeoutSec),
-      '--idle-no-busy-ms', String(WORKER_DEFAULTS.idleNoBusyMs),
-      '--viewport-width', String(WORKER_DEFAULTS.viewportWidth),
-      '--viewport-height', String(WORKER_DEFAULTS.viewportHeight),
-      '--page-zoom', String(WORKER_DEFAULTS.pageZoom),
-      '--headless', WORKER_DEFAULTS.headless,
-      '--open-new-chat', WORKER_DEFAULTS.openNewChat,
-    ];
-  } else {
-    args = [
-      GEMINI_WORKER_PATH,
-      '--fixed-prompt-file', DEFAULT_PROMPT_PATH,
-      '--keywords', job.keywords,
-      '--output-dir', job.output_dir,
-      '--session-dir', DEFAULT_GEMINI_SESSION_DIR,
-      '--max-retry', String(WORKER_DEFAULTS.maxRetry),
-      '--retry-wait-sec', String(WORKER_DEFAULTS.retryWaitSec),
-      '--task-gap-sec', String(WORKER_DEFAULTS.taskGapSec),
-      '--gen-timeout-sec', String(WORKER_DEFAULTS.genTimeoutSec),
-      '--login-wait-sec', String(WORKER_DEFAULTS.loginWaitSec),
-      '--idle-no-busy-ms', String(WORKER_DEFAULTS.idleNoBusyMs),
-      '--post-idle-poll-sec', String(WORKER_DEFAULTS.postIdlePollSec),
-      '--require-ui-download', String(WORKER_DEFAULTS.requireUiDownload),
-      '--viewport-width', String(WORKER_DEFAULTS.viewportWidth),
-      '--viewport-height', String(WORKER_DEFAULTS.viewportHeight),
-      '--page-zoom', String(WORKER_DEFAULTS.pageZoom),
-      '--strict-new-chat', 'true',
-      '--stop-after-bootstrap', 'false',
-      '--max-images-per-message', '10',
-      '--headless', WORKER_DEFAULTS.headless,
-      '--open-new-chat', WORKER_DEFAULTS.openNewChat,
-      '--attach-each-task', WORKER_DEFAULTS.attachEachTask,
-    ];
+  const args = [
+    providerCfg.worker_path,
+    '--fixed-prompt-file', fixedPromptPath,
+    '--keywords', job.keywords,
+    '--output-dir', job.output_dir,
+    '--session-dir', providerCfg.session_dir,
+    '--max-retry', String(WORKER_DEFAULTS.maxRetry),
+    '--retry-wait-sec', String(WORKER_DEFAULTS.retryWaitSec),
+    '--task-gap-sec', String(WORKER_DEFAULTS.taskGapSec),
+    '--gen-timeout-sec', String(WORKER_DEFAULTS.genTimeoutSec),
+    '--login-wait-sec', String(WORKER_DEFAULTS.loginWaitSec),
+    '--idle-no-busy-ms', String(WORKER_DEFAULTS.idleNoBusyMs),
+    '--post-idle-poll-sec', String(WORKER_DEFAULTS.postIdlePollSec),
+    '--require-ui-download', String(WORKER_DEFAULTS.requireUiDownload),
+    '--viewport-width', String(WORKER_DEFAULTS.viewportWidth),
+    '--viewport-height', String(WORKER_DEFAULTS.viewportHeight),
+    '--page-zoom', String(WORKER_DEFAULTS.pageZoom),
+    '--strict-new-chat', 'true',
+    '--stop-after-bootstrap', 'false',
+    '--max-images-per-message', '10',
+    '--headless', WORKER_DEFAULTS.headless,
+    '--open-new-chat', WORKER_DEFAULTS.openNewChat,
+    '--attach-each-task', WORKER_DEFAULTS.attachEachTask,
+  ];
+  if (provider === 'chatgpt' && providerCfg.base_url) {
+    args.push('--base-url', providerCfg.base_url);
+  }
+  if (provider === 'chatgpt' && providerCfg.cdp_url) {
+    args.push('--cdp-url', providerCfg.cdp_url);
   }
   for (const p of (job.image_paths || [])) {
     args.push('--image-path', p);
   }
 
-  pushLog(job, `Spawn: node ${args.map((x) => JSON.stringify(x)).join(' ')}`);
-  const child = spawn('node', args, {
+  const nodeExe = process.execPath || 'node';
+  pushLog(job, `Spawn: ${JSON.stringify(nodeExe)} ${args.map((x) => JSON.stringify(x)).join(' ')}`);
+  const child = spawn(nodeExe, args, {
     cwd: ROOT,
     windowsHide: false,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -543,6 +676,12 @@ async function runJob(job) {
   child.stderr.on('data', (d) => onLine(d, 'stderr'));
 
   const code = await new Promise((resolve) => {
+    child.on('error', (err) => {
+      const msg = String(err && err.message ? err.message : err);
+      pushLog(job, `spawn_error: ${msg}`);
+      job.error = simplifyJobError(msg);
+      resolve(1);
+    });
     child.on('close', resolve);
   });
 
@@ -562,13 +701,18 @@ async function runJob(job) {
     job.summary_result = summary.result || '';
     job.result_text = String(summary.reply_text || summary.result_text || '').trim();
     if (summary.fatal_error) {
-      job.error = summary.fatal_error;
+      job.error = simplifyJobError(summary.fatal_error);
     }
   }
 
   job.result_images = listOutputImages(job.output_dir);
 
-  if (code === 0 && (job.result_images.length > 0 || job.result_text)) {
+  if (summary && summary.result === 'ok' && (job.result_images.length > 0 || job.result_text)) {
+    job.status = 'success';
+    job.error = '';
+  } else if (summary && summary.result === 'partial' && (job.result_images.length > 0 || job.result_text)) {
+    job.status = 'partial';
+  } else if (code === 0 && (job.result_images.length > 0 || job.result_text)) {
     job.status = 'success';
   } else if (code === 2 && (job.result_images.length > 0 || job.result_text)) {
     job.status = 'partial';
@@ -577,7 +721,7 @@ async function runJob(job) {
   }
 
   if (code !== 0 && code !== 2 && !job.error) {
-    job.error = `Worker exited with code ${code}`;
+    job.error = simplifyJobError(`Worker exited with code ${code}`);
   }
   if (job.result_images.length === 0 && !job.result_text && !job.error) {
     job.error = 'No output result found in job output directory.';
@@ -589,35 +733,53 @@ async function runJob(job) {
 }
 
 async function processQueue() {
-  if (runningJobId) return;
+  if (runningJobIds.size > 0) return;
+  if (!queue.length) return;
+
   const next = queue.shift();
   refreshQueueIndex();
   saveJobsIndex();
   if (!next) return;
 
   const job = jobs.get(next);
-  if (!job) return processQueue();
-
-  runningJobId = job.id;
-  try {
-    await runJob(job);
-  } catch (err) {
-    job.status = 'failed';
-    job.error = String(err && err.message ? err.message : err);
-    job.finished_at = new Date().toISOString();
-    pushLog(job, `Fatal: ${job.error}`);
-    saveJobsIndex();
-  } finally {
-    runningJobId = null;
+  if (!job) {
     processQueue();
+    return;
   }
+
+  const provider = normalizeProvider(job.provider);
+  runningByProvider[provider] = job.id;
+  runningJobIds.add(job.id);
+
+  (async () => {
+    try {
+      await runJob(job);
+    } catch (err) {
+      job.status = 'failed';
+      job.error = simplifyJobError(String(err && err.message ? err.message : err));
+      job.finished_at = new Date().toISOString();
+      pushLog(job, `Fatal: ${job.error}`);
+      saveJobsIndex();
+    } finally {
+      if (runningByProvider[provider] === job.id) {
+        runningByProvider[provider] = null;
+      }
+      runningJobIds.delete(job.id);
+      processQueue();
+    }
+  })().catch(() => {
+    // ignore, handled inside
+  });
 }
 
 app.get('/api/health', (_req, res) => {
+  const running = Array.from(runningJobIds);
   res.json({
     ok: true,
     server_time: new Date().toISOString(),
-    running_job_id: runningJobId,
+    running_job_id: running[0] || null,
+    running_job_ids: running,
+    running_by_provider: { ...runningByProvider },
     queued_jobs: queue.length,
   });
 });
@@ -634,13 +796,13 @@ app.get('/api/config', (_req, res) => {
     lan_urls: lanUrls,
     defaults: {
       gemini_session_dir: DEFAULT_GEMINI_SESSION_DIR,
-      gpt_session_dir: DEFAULT_GPT_SESSION_DIR,
-      fixed_prompt_file: DEFAULT_PROMPT_PATH,
+      gemini_fixed_prompt_file: DEFAULT_GEMINI_PROMPT_PATH,
+      chatgpt_session_dir: DEFAULT_CHATGPT_SESSION_DIR,
+      chatgpt_fixed_prompt_file: DEFAULT_CHATGPT_PROMPT_PATH,
+      chatgpt_base_url: DEFAULT_CHATGPT_BASE_URL,
+      chatgpt_cdp_url: DEFAULT_CHATGPT_CDP_URL,
     },
-    providers: [
-      { id: 'gemini', label: 'Gemini 图片生成' },
-      { id: 'gpt', label: 'GPT 网页对话' },
-    ],
+    providers: PROVIDERS.map((id) => ({ id, label: PROVIDER_MAP[id].label })),
   });
 });
 
@@ -653,29 +815,33 @@ app.post('/api/jobs', upload.any(), (req, res) => {
       }
     }
 
-    const provider = String(req.body.provider || 'gemini').trim().toLowerCase();
-    if (!['gemini', 'gpt'].includes(provider)) {
-      return res.status(400).json({ error: 'provider is invalid.' });
-    }
+    const provider = normalizeProvider(req.body.provider || DEFAULT_PROVIDER);
 
-    const keywords = String(req.body.keywords || '').trim();
+    const keywords = normalizeKeywordsInput(req.body.keywords || '');
     const requester = String(req.body.requester || '').trim();
     if (!keywords) return res.status(400).json({ error: 'keywords is required.' });
 
     const incomingFiles = (req.files || [])
       .filter((f) => ['product_image', 'product_images'].includes(f.fieldname));
-    if (provider === 'gemini' && !incomingFiles.length) {
+    if (!incomingFiles.length) {
       return res.status(400).json({ error: 'At least one product image is required.' });
     }
 
-    const job = createJobFromFiles({
-      files: incomingFiles,
-      requester,
-      keywords,
-      provider,
-    });
-    jobs.set(job.id, job);
-    queue.push(job.id);
+    const targetProviders = [provider];
+    const batchId = '';
+    const createdJobs = [];
+    for (const oneProvider of targetProviders) {
+      const job = createJobFromFiles({
+        files: incomingFiles,
+        requester,
+        keywords,
+        provider: oneProvider,
+        batchId,
+      });
+      jobs.set(job.id, job);
+      queue.push(job.id);
+      createdJobs.push(job);
+    }
 
     refreshQueueIndex();
     saveJobsIndex();
@@ -683,9 +849,10 @@ app.post('/api/jobs', upload.any(), (req, res) => {
 
     return res.status(201).json({
       ok: true,
-      created_count: 1,
-      job: compactJob(job),
-      jobs: [compactJob(job)],
+      batch_id: batchId || '',
+      created_count: createdJobs.length,
+      job: compactJob(createdJobs[0]),
+      jobs: createdJobs.map(compactJob),
     });
   } catch (err) {
     return res.status(500).json({ error: String(err && err.message ? err.message : err) });
@@ -705,8 +872,9 @@ app.post('/api/jobs/:id/retry', (req, res) => {
     if (!source) return res.status(404).json({ error: 'source job not found' });
 
     const requester = String((req.body && req.body.requester) || '').trim();
-    const keywords = String((req.body && req.body.keywords) || '').trim();
-    const job = createJobFromExistingJob(source, { requester, keywords });
+    const keywords = normalizeKeywordsInput((req.body && req.body.keywords) || '');
+    const provider = normalizeProvider((req.body && req.body.provider) || source.provider || DEFAULT_PROVIDER);
+    const job = createJobFromExistingJob(source, { requester, keywords, provider });
 
     jobs.set(job.id, job);
     queue.push(job.id);
@@ -730,8 +898,11 @@ app.get('/api/jobs', (_req, res) => {
   const list = Array.from(jobs.values())
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
     .map(compactJob);
+  const running = Array.from(runningJobIds);
   res.json({
-    running_job_id: runningJobId,
+    running_job_id: running[0] || null,
+    running_job_ids: running,
+    running_by_provider: { ...runningByProvider },
     queued_jobs: queue.length,
     jobs: list,
   });
@@ -803,3 +974,5 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log('Passcode protection disabled. Set PORTAL_PASSCODE to enable.');
   }
 });
+
+

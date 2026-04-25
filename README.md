@@ -1,60 +1,63 @@
-# QYL Gemini Web RPA Suite
+# QYL Image Workbench (Gemini + ChatGPT)
 
-这套项目主要用于你的本地 Gemini 网页生图工作流，包含：
+This project runs local browser automation for product image generation and exposes a LAN portal for teammates.
 
-- `scripts/gemini_web_rpa_worker.js`：Gemini 网页 RPA 主流程
-- `scripts/gemini_lan_server.js`：本地局域网页面服务
-- `web/lan_portal/index.html`：QYL 图片生成功能网页
-- `n8n_gemini_workflows/`：n8n 工作流导出文件
-- `qyl-amazon-japan-calculator/`：亚马逊日本定价计算器源码
+Main workers:
+- `scripts/gemini_web_rpa_worker.js`
+- `scripts/chatgpt_web_image_worker.js`
 
-## 新电脑最简使用
+Server:
+- `scripts/gemini_lan_server.js`
+- UI: `web/lan_portal/index.html`
 
-### 1. 安装基础环境
+Local URL:
+- `http://127.0.0.1:8788`
 
-- Windows
-- Node.js 20 或更新版本
+## Quick start (recommended)
 
-### 2. 下载代码
-
-直接下载这个仓库的 `main` 分支即可。
-
-### 3. 一键初始化并启动
-
-在项目根目录打开 PowerShell，运行：
+Run in PowerShell from project root:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-这个脚本会自动完成：
+This script will:
+- check Node.js / npm / npx
+- install dependencies
+- install Playwright Chromium
+- create runtime folders
+- start the local server on port `8788`
+- open the portal page
 
-- 检查 Node.js
-- 安装项目依赖
-- 安装 Playwright Chromium
-- 创建运行目录
-- 启动本地服务
-- 打开 QYL 图片生成功能网页
+## Manual start
 
-启动后默认访问：
+Foreground:
 
-```text
-http://127.0.0.1:8787
+```bat
+start_server.bat
 ```
 
-## 第一次使用要做的事
+Background:
 
-- 第一次打开后，需要在 Gemini 网页里手动登录一次你的账号
-- 登录成功后，后续会复用本地会话目录 `.gemini_profile_live`
+```bat
+start.bat
+```
 
-## n8n
+## LAN access for teammates
 
-如果你要在新电脑继续用 n8n：
+1. Start the server on your machine.
+2. Open `http://127.0.0.1:8788/api/config` and copy one URL from `lan_urls`.
+3. Teammates on the same Wi-Fi open that LAN URL.
 
-- 先安装 n8n
-- 再导入 `n8n_gemini_workflows/` 里的工作流 JSON
+## First-time login
 
-## 说明
+- Log in once in the automation browser for Gemini and ChatGPT.
+- This flow is web automation based; no Gemini API key or ChatGPT API key is required.
 
-- 这套主流程是网页 RPA，不依赖 Gemini API Key
-- `.env.example` 里的 GPT / MiniMax 变量是仓库里其他辅助脚本使用，不是这套 Gemini 网页工作流的必需项
+## Key folders
+
+- `prompts/fixed_prompt_for_gemini_web_rpa.txt`
+- `prompts/fixed_prompt_for_chatgpt_web_rpa.txt`
+- `output/lan_portal_jobs`
+- `output/lan_portal_uploads`
+

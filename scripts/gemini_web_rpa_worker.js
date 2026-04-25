@@ -776,6 +776,49 @@ async function dismissBlockingDialogs(page) {
   }
 }
 
+async function acceptImageFilesConsentDialog(page) {
+  try {
+    const acted = await page.evaluate(() => {
+      const visible = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const st = window.getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
+      };
+
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"], .mat-mdc-dialog-container'))
+        .filter(visible);
+      const titleLike = /creating content from images and files|images and files|prohibited use policy/i;
+      const agreeLike = /^(agree|i agree)$/i;
+
+      for (const dialog of dialogs) {
+        const text = `${dialog.textContent || ''}`.replace(/\s+/g, ' ').trim();
+        if (!titleLike.test(text)) continue;
+
+        const buttons = Array.from(dialog.querySelectorAll('button, [role="button"]')).filter(visible);
+        for (const btn of buttons) {
+          const label = `${btn.getAttribute('aria-label') || ''} ${btn.getAttribute('title') || ''} ${btn.textContent || ''}`
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (!agreeLike.test(label)) continue;
+          btn.click();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (acted) {
+      log('image_files_consent_accepted');
+      await page.waitForTimeout(500);
+      return true;
+    }
+  } catch {
+    // ignore dialog parsing errors
+  }
+  return false;
+}
+
 async function clickAnyVisible(page, selectors, timeoutMs = 2800) {
   for (const sel of selectors) {
     try {
@@ -1092,6 +1135,7 @@ async function attachImage(page, imagePath) {
   const imageBase = path.basename(String(imagePath || ''));
   log('attach_image_start', { image: imageBase });
   await dismissBlockingDialogs(page);
+  await acceptImageFilesConsentDialog(page);
 
   const setFilesViaAnyInput = async (stage) => {
     const inputLocator = page.locator('input[type="file"]');
@@ -1112,12 +1156,9 @@ async function attachImage(page, imagePath) {
     return false;
   };
 
-  const clickAndHandleFileChooser = async (locator, stage) => {
+  const setViaChooser = async (chooser, stage) => {
+    if (!chooser) return false;
     try {
-      const chooserPromise = page.waitForEvent('filechooser', { timeout: 1800 }).catch(() => null);
-      await withTimeout(locator.click({ timeout: 2200 }), 4500, `chooser_click:${stage}`);
-      const chooser = await chooserPromise;
-      if (!chooser) return false;
       await withTimeout(chooser.setFiles(imagePath), 6500, `chooser_set:${stage}`);
       await page.waitForTimeout(650);
       log('attach_image_done', { image: imageBase, method: `file_chooser:${stage}` });
@@ -1131,44 +1172,73 @@ async function attachImage(page, imagePath) {
 
   const openers = [
     '.upload-button button',
+    'button[aria-label*="Open upload file menu" i]',
+    'button[aria-label*="upload file menu" i]',
     'button[aria-label*="Add files" i]',
     'button[aria-label*="Upload" i]',
     'button[aria-label*="plus" i]',
     'button[aria-label*="add" i]',
+    'button[aria-label*="Attach" i]',
     'button:has-text("Upload files")',
     'button:has-text("Upload")',
+    'button:has-text("Add photos and files")',
+    'button:has-text("Add photos")',
     'button:has-text("Add files")',
     'button:has-text("Tools")',
     '[aria-haspopup="menu"]',
   ];
 
   const uploadItems = [
+    '[role="menuitem"]:has-text("Add photos and files")',
+    'button[role="menuitem"]:has-text("Add photos and files")',
+    '[role="menuitem"]:has-text("Add photos")',
+    'button[role="menuitem"]:has-text("Add photos")',
     '[role="menuitem"]:has-text("Upload files")',
+    'button[role="menuitem"]:has-text("Upload files")',
     'button:has-text("Upload files")',
     '[role="menuitem"]:has-text("Upload file")',
+    'button[role="menuitem"]:has-text("Upload file")',
     'button:has-text("Upload file")',
     '[role="menuitem"]:has-text("Upload")',
+    'button[role="menuitem"]:has-text("Upload")',
     'button:has-text("Upload")',
   ];
 
-  // Avoid native file-chooser hangs: click UI controls then inject into input[type=file].
+  // Click one opener once. If it opens file chooser, set file immediately.
+  // If it opens a menu, click upload menu item and set file chooser there.
   for (const openSel of openers) {
     const opener = page.locator(openSel).first();
     try {
       if (!(await opener.count()) || !(await opener.isVisible())) continue;
-      if (await clickAndHandleFileChooser(opener, `opener:${openSel}`)) return true;
+      const chooserFromOpener = page.waitForEvent('filechooser', { timeout: 2200 }).catch(() => null);
       await withTimeout(opener.click({ timeout: 2200 }), 4500, `opener_click:${openSel}`);
+      if (await setViaChooser(await chooserFromOpener, `opener:${openSel}`)) return true;
       await page.waitForTimeout(220);
       if (await setFilesViaAnyInput(`after_opener:${openSel}`)) return true;
+      if (await acceptImageFilesConsentDialog(page)) {
+        const chooserRetry = page.waitForEvent('filechooser', { timeout: 2200 }).catch(() => null);
+        await withTimeout(opener.click({ timeout: 2200 }), 4500, `opener_click_retry:${openSel}`);
+        if (await setViaChooser(await chooserRetry, `opener_retry:${openSel}`)) return true;
+        await page.waitForTimeout(220);
+        if (await setFilesViaAnyInput(`after_opener_retry:${openSel}`)) return true;
+      }
 
       for (const itemSel of uploadItems) {
         const item = page.locator(itemSel).first();
         try {
           if (!(await item.count()) || !(await item.isVisible())) continue;
-          if (await clickAndHandleFileChooser(item, `menu_item:${openSel}|${itemSel}`)) return true;
+          const chooserFromItem = page.waitForEvent('filechooser', { timeout: 2200 }).catch(() => null);
           await withTimeout(item.click({ timeout: 2200 }), 4500, `menu_item_click:${openSel}|${itemSel}`);
+          if (await setViaChooser(await chooserFromItem, `menu_item:${openSel}|${itemSel}`)) return true;
           await page.waitForTimeout(220);
           if (await setFilesViaAnyInput(`after_menu:${openSel}|${itemSel}`)) return true;
+          if (await acceptImageFilesConsentDialog(page)) {
+            const chooserRetry = page.waitForEvent('filechooser', { timeout: 2200 }).catch(() => null);
+            await withTimeout(item.click({ timeout: 2200 }), 4500, `menu_item_click_retry:${openSel}|${itemSel}`);
+            if (await setViaChooser(await chooserRetry, `menu_item_retry:${openSel}|${itemSel}`)) return true;
+            await page.waitForTimeout(220);
+            if (await setFilesViaAnyInput(`after_menu_retry:${openSel}|${itemSel}`)) return true;
+          }
         } catch {
           // next item
         }

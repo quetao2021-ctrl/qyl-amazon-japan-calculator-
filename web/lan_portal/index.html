@@ -128,6 +128,7 @@
 
     input[type="text"],
     input[type="password"],
+    select,
     textarea,
     input[type="file"] {
       width: 100%;
@@ -287,6 +288,11 @@
       margin-bottom: 10px;
     }
 
+    .retry-provider {
+      width: auto;
+      min-width: 170px;
+    }
+
     .detail-base {
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -375,6 +381,14 @@
                 <input id="requester" name="requester" type="text" />
               </div>
 
+              <div class="field" id="providerField" style="display:none;">
+                <label for="provider">🧠 工作流（必选）</label>
+                <select id="provider" name="provider">
+                  <option value="gemini">Gemini 图片生成</option>
+                  <option value="chatgpt">ChatGPT 图片生成</option>
+                </select>
+              </div>
+
               <div class="field">
                 <label for="keywords">🏷️ 关键词（必填）</label>
                 <textarea id="keywords" name="keywords" required></textarea>
@@ -402,6 +416,7 @@
           <section class="card">
             <h2><span>📄</span><span>任务详情</span></h2>
             <div class="detail-toolbar">
+              <select id="retryProvider" class="retry-provider" title="选择重提使用的工作流"></select>
               <button id="retryBtn" class="btn secondary" type="button" disabled>🔁 一键重提</button>
               <button id="downloadAllBtn" class="btn secondary" type="button" disabled>⬇️ 一键下载</button>
               <span id="retryMsg" class="meta"></span>
@@ -429,6 +444,8 @@
       panels: Array.from(document.querySelectorAll('.panel')),
       form: document.getElementById('jobForm'),
       requester: document.getElementById('requester'),
+      provider: document.getElementById('provider'),
+      providerField: document.getElementById('providerField'),
       keywords: document.getElementById('keywords'),
       productImages: document.getElementById('productImages'),
       filePreview: document.getElementById('filePreview'),
@@ -438,6 +455,7 @@
       queueInfo: document.getElementById('queueInfo'),
       formMsg: document.getElementById('formMsg'),
       retryBtn: document.getElementById('retryBtn'),
+      retryProvider: document.getElementById('retryProvider'),
       downloadAllBtn: document.getElementById('downloadAllBtn'),
       retryMsg: document.getElementById('retryMsg'),
       jobList: document.getElementById('jobList'),
@@ -449,9 +467,14 @@
     let passcodeRequired = false;
     let calculatorEnabled = true;
     let maxUploadFiles = 10;
+    let providers = [
+      { id: 'gemini', label: 'Gemini 图片生成' },
+      { id: 'chatgpt', label: 'ChatGPT 图片生成' },
+    ];
     let selectedJobId = '';
     let jobsCache = [];
     let suspendRefreshUntil = 0;
+    let retryProviderOverride = '';
 
     function esc(value) {
       return String(value || '').replace(/[&<>"']/g, (char) => ({
@@ -490,6 +513,32 @@
       }[status] || status;
     }
 
+    function providerText(providerId) {
+      const id = String(providerId || 'gemini').toLowerCase();
+      const one = providers.find((p) => String(p.id || '').toLowerCase() === id);
+      return one ? one.label : id;
+    }
+
+    function renderProviderSelect(selectEl, fallbackValue = 'gemini') {
+      if (!selectEl) return;
+      const current = String(selectEl.value || fallbackValue || 'gemini').toLowerCase();
+      const list = Array.isArray(providers) && providers.length ? providers : [
+        { id: 'gemini', label: 'Gemini 图片生成' },
+      ];
+      selectEl.innerHTML = list.map((p) => {
+        const id = esc(String(p.id || '').trim().toLowerCase());
+        const label = esc(String(p.label || p.id || '').trim());
+        return `<option value="${id}">${label}</option>`;
+      }).join('');
+      const hasCurrent = list.some((p) => String(p.id || '').trim().toLowerCase() === current);
+      selectEl.value = hasCurrent ? current : String(list[0].id || 'gemini').toLowerCase();
+    }
+
+    function renderProviderOptions() {
+      renderProviderSelect(els.provider, 'gemini');
+      renderProviderSelect(els.retryProvider, retryProviderOverride || (els.retryProvider ? els.retryProvider.value : 'gemini'));
+    }
+
     function shortError(value, limit = 140) {
       const text = String(value || '').replace(/\s+/g, ' ').trim();
       if (!text) return '';
@@ -523,7 +572,9 @@
             <div class="job-id">${esc(job.id)}</div>
             <span class="badge ${statusClass(job.status)}">${esc(statusText(job.status))}</span>
           </div>
+          ${job.batch_id ? `<div class="small">🧩 批次：${esc(job.batch_id)}</div>` : ''}
           <div class="small">👤 提交人：${esc(job.requester || '-')}</div>
+          <div class="small">🧠 工作流：${esc(providerText(job.provider || 'gemini'))}</div>
           <div class="small">🖼️ 参考图：${Number(job.image_count || 0)} 张</div>
           <div class="small">✅ 结果图：${(job.result_images || []).length} 张</div>
           <div class="small">🕒 创建：${esc(fmtTime(job.created_at))}</div>
@@ -535,6 +586,7 @@
 
       Array.from(els.jobList.querySelectorAll('.job')).forEach((node) => {
         node.addEventListener('click', () => {
+          if (selectedJobId !== node.dataset.id) retryProviderOverride = '';
           selectedJobId = node.dataset.id;
           renderJobList(jobsCache);
           loadDetail(selectedJobId);
@@ -563,6 +615,13 @@
     function updateRetryButton(job) {
       const enabled = Boolean(job);
       els.retryBtn.disabled = !enabled;
+      if (els.retryProvider) {
+        els.retryProvider.disabled = !enabled;
+        if (enabled) {
+          renderProviderSelect(els.retryProvider, retryProviderOverride || job.provider || 'gemini');
+          retryProviderOverride = els.retryProvider.value || retryProviderOverride;
+        }
+      }
       const canDownloadAll = Boolean(job && Array.isArray(job.result_images) && job.result_images.length > 0);
       els.downloadAllBtn.disabled = !canDownloadAll;
       if (!enabled) {
@@ -600,8 +659,15 @@
       passcodeRequired = Boolean(config.passcode_required);
       calculatorEnabled = Boolean(config.calculator_enabled);
       maxUploadFiles = Number(config.max_upload_files || 10);
+      providers = Array.isArray(config.providers) && config.providers.length
+        ? config.providers
+        : providers;
 
       els.passcodeField.style.display = passcodeRequired ? 'block' : 'none';
+      renderProviderOptions();
+      if (els.providerField) {
+        els.providerField.style.display = providers.length > 1 ? 'block' : 'none';
+      }
 
       if (!calculatorEnabled) {
         const panel = document.getElementById('panel-calc');
@@ -613,7 +679,13 @@
       const response = await fetch('/api/jobs');
       const data = await response.json();
       const jobs = data.jobs || [];
-      els.queueInfo.textContent = `运行中：${data.running_job_id || '-'} | 排队：${data.queued_jobs}`;
+      const runningIds = Array.isArray(data.running_job_ids) ? data.running_job_ids : [];
+      const runningText = runningIds.length ? runningIds.join(', ') : (data.running_job_id || '-');
+      const slots = data.running_by_provider || {};
+      const slotText = (providers || [])
+        .map((p) => `${providerText(p.id)}: ${slots[String(p.id || '').toLowerCase()] || '-'}`)
+        .join(' | ');
+      els.queueInfo.textContent = `运行中：${runningText} | ${slotText} | 排队：${data.queued_jobs}`;
       renderJobList(jobs);
     }
 
@@ -621,6 +693,7 @@
       if (!jobId) {
         els.detailBase.textContent = '请选择任务';
         els.detailImages.innerHTML = '';
+        retryProviderOverride = '';
         updateRetryButton(null);
         return;
       }
@@ -633,12 +706,14 @@
 
       els.detailBase.innerHTML = `
         <div class="detail-row"><b>任务ID：</b>${esc(job.id)}</div>
+        ${job.batch_id ? `<div class="detail-row"><b>批次ID：</b>${esc(job.batch_id)}</div>` : ''}
         <div class="detail-row"><b>状态：</b>${esc(statusText(job.status))}</div>
+        <div class="detail-row"><b>工作流：</b>${esc(providerText(job.provider || 'gemini'))}</div>
         <div class="detail-row"><b>提交人：</b>${esc(job.requester || '-')}</div>
         <div class="detail-row"><b>时间：</b>创建 ${esc(fmtTime(job.created_at))} / 开始 ${esc(fmtTime(job.started_at))} / 结束 ${esc(fmtTime(job.finished_at))}</div>
         <div class="detail-row"><b>关键词：</b>${esc(job.keywords || '-')}</div>
         <div class="detail-row"><b>参考图：</b>${imageNames.length ? imageNames.map(esc).join('，') : '-'}</div>
-        ${job.error ? `<div class="detail-row" style="color:#dc2626;"><b>错误：</b>${esc(job.error)}</div>` : ''}
+        ${job.error ? `<div class="detail-row" style="color:#dc2626;" title="${esc(job.error)}"><b>错误：</b>${esc(shortError(job.error, 240))}</div>` : ''}
       `;
 
       const images = Array.isArray(job.result_images) ? job.result_images : [];
@@ -666,6 +741,7 @@
         });
       }
 
+      if (!retryProviderOverride) retryProviderOverride = job.provider || 'gemini';
       updateRetryButton(job);
     }
 
@@ -676,6 +752,7 @@
 
       try {
         const files = Array.from(els.productImages.files || []);
+        const selectedProvider = els.provider.value || 'gemini';
         if (!files.length) throw new Error('请先选择图片');
         if (files.length > maxUploadFiles) {
           throw new Error(`最多上传 ${maxUploadFiles} 张图片`);
@@ -683,6 +760,7 @@
 
         const formData = new FormData();
         formData.append('requester', els.requester.value || '');
+        formData.append('provider', els.provider.value || 'gemini');
         formData.append('keywords', els.keywords.value || '');
         if (passcodeRequired) formData.append('passcode', els.passcode.value || '');
         files.forEach((file) => formData.append('product_images', file));
@@ -694,12 +772,18 @@
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || '提交失败');
 
-        const job = data.job || (data.jobs || [])[0];
+        const createdJobs = Array.isArray(data.jobs) ? data.jobs : [];
+        const job = data.job || createdJobs[0];
         els.formMsg.textContent = `提交成功（参考图 ${files.length} 张）`;
         els.form.reset();
+        renderProviderOptions();
+        els.provider.value = selectedProvider;
         renderFilePreview();
 
-        if (job && job.id) selectedJobId = job.id;
+        if (job && job.id) {
+          selectedJobId = job.id;
+          retryProviderOverride = '';
+        }
         await loadJobs();
         await loadDetail(selectedJobId);
       } catch (error) {
@@ -713,11 +797,15 @@
       const source = jobsCache.find((job) => job.id === sourceId);
       if (!source) return;
 
+      const retryProvider = retryProviderOverride || (els.retryProvider && els.retryProvider.value) || source.provider || 'gemini';
       els.retryBtn.disabled = true;
-      els.retryMsg.textContent = `重提中：${sourceId}`;
+      els.retryMsg.textContent = `重提中：${sourceId}（${providerText(retryProvider)}）`;
 
       try {
-        const body = { requester: els.requester.value || source.requester || '' };
+        const body = {
+          requester: els.requester.value || source.requester || '',
+          provider: retryProvider,
+        };
         if (passcodeRequired) body.passcode = els.passcode.value || '';
 
         const response = await fetch(`/api/jobs/${encodeURIComponent(sourceId)}/retry`, {
@@ -760,6 +848,11 @@
       els.form.addEventListener('submit', submitJob);
       els.retryBtn.addEventListener('click', retrySelectedJob);
       els.downloadAllBtn.addEventListener('click', downloadAllSelectedJob);
+      if (els.retryProvider) {
+        els.retryProvider.addEventListener('change', () => {
+          retryProviderOverride = els.retryProvider.value || '';
+        });
+      }
 
       await loadConfig();
       await loadJobs();
